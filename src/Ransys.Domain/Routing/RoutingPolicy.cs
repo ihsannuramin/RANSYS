@@ -19,9 +19,10 @@ public static class ProviderCapabilities
     public const string Reconciliation = "supports_reconciliation";
     public const string SettlementFile = "supports_settlement_file";
 
-    // TODO / Architecture Decision Required: Architecture Spec §17 defines no capability for TRANSFER or VOID.
-    // These codes follow the same convention; providers must declare them explicitly (fail closed).
+    /// <summary>ADR-017.</summary>
     public const string Transfer = "supports_transfer";
+
+    /// <summary>ADR-017: explicit; never implied by, or implying, <see cref="Reversal"/> or <see cref="Refund"/>.</summary>
     public const string Void = "supports_void";
 
     /// <summary>Capability a provider needs to receive a transaction of <paramref name="type"/>; null if not routable.</summary>

@@ -124,6 +124,29 @@ public sealed class RoutingPolicyTests
         Assert.True(Select([Candidate(ProviderRefA, 1, capability)], type).IsSuccess);
     }
 
+    [Theory]
+    [InlineData(TransactionType.Transfer, ProviderCapabilities.Transfer)]
+    [InlineData(TransactionType.Void, ProviderCapabilities.Void)]
+    public void Transfer_and_void_use_their_own_capabilities(TransactionType type, string capability)
+    {
+        // ADR-017
+        Assert.Equal(capability, ProviderCapabilities.RequiredFor(type));
+        Assert.True(Select([Candidate(ProviderRefA, 1, capability)], type).IsSuccess);
+    }
+
+    [Fact]
+    public void Void_is_never_satisfied_by_reversal_or_refund_capabilities()
+    {
+        var reversalAndRefundOnly = Candidate(ProviderRefA, 1, ProviderCapabilities.Reversal, ProviderCapabilities.Refund);
+
+        var result = Select([reversalAndRefundOnly], TransactionType.Void);
+
+        Assert.Equal(ErrorCodes.NoRouteAvailable, result.Error.Code);
+        Assert.Contains("BANK_A=CapabilityUnsupported", result.Error.Message, StringComparison.Ordinal);
+        Assert.Equal(ErrorCodes.NoRouteAvailable, Select([Candidate(ProviderRefA, 1, ProviderCapabilities.Void)], TransactionType.Reversal).Error.Code);
+        Assert.Equal(ErrorCodes.NoRouteAvailable, Select([Candidate(ProviderRefA, 1, ProviderCapabilities.Void)], TransactionType.Refund).Error.Code);
+    }
+
     [Fact]
     public void Result_becomes_the_initial_routing_decision()
     {
