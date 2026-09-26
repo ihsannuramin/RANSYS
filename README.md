@@ -74,7 +74,7 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 | 6 Idempotency service | Done |
 | 7 Transaction attempts | Done |
 | 8 Transactional outbox | Done |
-| 9 Routing foundation | Pending |
+| 9 Routing foundation | Done |
 | 10 Concurrency scenarios | Pending |
 
 ## Unresolved architecture decisions
@@ -89,4 +89,5 @@ Accepted ADRs are listed in [`docs/decisions/`](docs/decisions/). Items still op
 - Original-side refund summary transitions (PS-11..PS-13) wait for the refund use case.
 - Minimum age before recovering an outcome-less attempt must exceed the longest provider timeout; the recovery worker schedule is not yet configured (service implemented, no hosted loop).
 - Outbox consumers: Backoffice projection with inbox/dedup + `source_version`, optional RabbitMQ publisher, DEAD-event alerting and retention of published rows.
+- Capability codes for TRANSFER and VOID (`supports_transfer`, `supports_void`) are not in Architecture Spec §17; providers must declare them explicitly. Circuit breaker (state transitions, half-open probe limits) and provider health measurement are not implemented; routing only reads their state.
 - Items deferred to later design documents: OpenAPI v1, SIGNED_API contract, Provider Adapter Contract v1, response code catalog, configuration schema, SOAP/ISO8583 profiles.

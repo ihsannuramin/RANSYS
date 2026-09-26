@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../Ransys.Application/Ransys.Application.csproj" />
+    <ProjectReference Include="../Ransys.Configuration/Ransys.Configuration.csproj" />
   </ItemGroup>
 
 </Project>

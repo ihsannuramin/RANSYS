@@ -2,6 +2,7 @@ using System.Collections.Frozen;
 using Ransys.Domain.Attempts;
 using Ransys.Domain.Fees;
 using Ransys.Domain.Ledger;
+using Ransys.Domain.Routing;
 using Ransys.Domain.Transactions;
 
 namespace Ransys.Domain;
@@ -147,6 +148,18 @@ public static class CanonicalCodes
         (Ledger.ReservationStatus.Active, "ACTIVE"),
         (Ledger.ReservationStatus.Committed, "COMMITTED"),
         (Ledger.ReservationStatus.Released, "RELEASED"));
+
+    /// <summary>DDL v1.1 <c>ck_provider_health_state</c>.</summary>
+    public static readonly CodeMap<ProviderHealth> ProviderHealth = new(
+        (Routing.ProviderHealth.Healthy, "HEALTHY"),
+        (Routing.ProviderHealth.Degraded, "DEGRADED"),
+        (Routing.ProviderHealth.Unhealthy, "UNHEALTHY"));
+
+    /// <summary>DDL v1.1 <c>ck_provider_circuit_state</c>.</summary>
+    public static readonly CodeMap<CircuitState> CircuitState = new(
+        (Routing.CircuitState.Closed, "CLOSED"),
+        (Routing.CircuitState.Open, "OPEN"),
+        (Routing.CircuitState.HalfOpen, "HALF_OPEN"));
 
     public static readonly CodeMap<FeeComponentType> FeeComponentType = new(
         (Fees.FeeComponentType.MerchantServiceFee, "MERCHANT_SERVICE_FEE"),

@@ -50,6 +50,11 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 - DB representation: a started row is `request_sent=true, transport_status='SENT', outcome_recorded_at NULL` (migration `0004`). Only `outcome_recorded_at IS NOT NULL` means an outcome exists. Never downgrade `request_sent` except through a recorded adapter outcome.
 - Map results with `AttemptResolution.Classify`. `AttemptRecoveryService` turns outcome-less attempts into IN_DOUBT (never failover or release).
 
+## Routing
+
+- `RoutingService.RouteAsync` (`src/Ransys.Routing`) reads the active ROUTING config version (`ConfigurationService`, fails closed with `CONFIGURATION_NOT_AVAILABLE`) and applies `RoutingPolicy` (`src/Ransys.Domain/Routing`). It picks the lowest priority number among eligible providers. Excluded are: route disabled, provider inactive, no operational state row, manual disable (a `manual_disabled_until` in the past means re-enabled), circuit OPEN, UNHEALTHY, missing capability (`ProviderCapabilities.RequiredFor`), or already tried (`ExcludedProviders`). DEGRADED and HALF_OPEN stay eligible. Type-specific routes override wildcard (`transaction_type IS NULL`) routes.
+- Routing never decides whether a failover is safe; that is `Transaction.RecordFailover` / `AuthorizeAttempt`. Capture the result with `RoutingResult.ToInitialDecision()` and store `ConfigVersionId` in the transaction's configuration snapshot. No weighted, least-cost or smart routing.
+
 ## Transactional outbox
 
 - Producers write events only through `IOutboxWriter.EnqueueAsync` inside the same `IDatabaseSession` as the change they describe. The Ledger Posting Service already does this for every posting.

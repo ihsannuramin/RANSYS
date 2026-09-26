@@ -50,6 +50,14 @@ public sealed partial class CanonicalCodesTests
         Assert.Equal(DdlValues("ck_ledger_entry_side"), Sorted(CanonicalCodes.EntrySide.Codes));
 
     [Fact]
+    public void Provider_health_codes_match_ddl() =>
+        Assert.Equal(DdlValues("ck_provider_health_state"), Sorted(CanonicalCodes.ProviderHealth.Codes));
+
+    [Fact]
+    public void Circuit_state_codes_match_ddl() =>
+        Assert.Equal(DdlValues("ck_provider_circuit_state"), Sorted(CanonicalCodes.CircuitState.Codes));
+
+    [Fact]
     public void Codes_round_trip_and_are_case_sensitive()
     {
         foreach (var status in Enum.GetValues<ProcessingStatus>())

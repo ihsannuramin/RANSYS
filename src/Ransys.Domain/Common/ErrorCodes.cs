@@ -31,6 +31,12 @@ public static class ErrorCodes
     public const string RoutingInvalidDecision = "ROUTING_INVALID_DECISION";
     public const string RoutingFailoverToSameProvider = "ROUTING_FAILOVER_TO_SAME_PROVIDER";
 
+    /// <summary>Architecture Spec §21 canonical response 5001.</summary>
+    public const string NoRouteAvailable = "NO_ROUTE_AVAILABLE";
+
+    /// <summary>No active configuration version for a domain (fail closed).</summary>
+    public const string ConfigurationNotAvailable = "CONFIGURATION_NOT_AVAILABLE";
+
     public const string AttemptInconsistentTransport = "ATTEMPT_INCONSISTENT_TRANSPORT";
     public const string AttemptOutcomeAlreadyRecorded = "ATTEMPT_OUTCOME_ALREADY_RECORDED";
     public const string AttemptNotAllowed = "ATTEMPT_NOT_ALLOWED";
