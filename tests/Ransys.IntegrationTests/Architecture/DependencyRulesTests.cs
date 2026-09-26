@@ -93,6 +93,58 @@ public sealed class DependencyRulesTests
         Assert.DoesNotContain("Ransys.Persistence.PostgreSql", references);
     }
 
+    [Theory]
+    [InlineData("Ransys.Adapter.Contracts")]
+    [InlineData("Ransys.Adapter.Sdk")]
+    public void Adapters_cannot_reach_core_or_infrastructure_even_transitively(string projectName)
+    {
+        // Provider Adapter Contract v1 §6: adapters own protocol/mapping only, never wallet, ledger or routing.
+        var closure = TransitiveProjectReferences(projectName);
+
+        Assert.All(closure, reference => Assert.Contains(reference, AllowedAdapterClosure));
+    }
+
+    [Theory]
+    [InlineData("Ransys.Adapter.Contracts")]
+    [InlineData("Ransys.Adapter.Sdk")]
+    public void Adapter_libraries_do_not_use_hosting_or_data_access_packages(string projectName)
+    {
+        // The gRPC server base only needs Grpc.Core.Api; ASP.NET Core hosting belongs to the adapter host process.
+        var project = LoadProject(projectName);
+
+        Assert.Empty(project.Descendants("FrameworkReference"));
+        Assert.DoesNotContain(
+            PackageReferences(project),
+            package => ForbiddenDomainPackagePrefixes.Any(prefix =>
+                package.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static readonly string[] AllowedAdapterClosure =
+    [
+        "Ransys.Adapter.Contracts",
+        "Ransys.Contracts",
+        "Ransys.Domain",
+    ];
+
+    private static HashSet<string> TransitiveProjectReferences(string projectName)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var pending = new Stack<string>(ProjectReferences(LoadProject(projectName)));
+        while (pending.Count > 0)
+        {
+            var next = pending.Pop();
+            if (seen.Add(next))
+            {
+                foreach (var reference in ProjectReferences(LoadProject(next)))
+                {
+                    pending.Push(reference);
+                }
+            }
+        }
+
+        return seen;
+    }
+
     private static XDocument LoadProject(string projectName)
     {
         var path = Path.Combine(RepositoryRoot(), "src", projectName, $"{projectName}.csproj");

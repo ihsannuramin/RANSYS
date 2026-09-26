@@ -82,6 +82,14 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 - New transactions are created only through `IdempotencyService.ClaimAsync(session, channel, identity, createTransaction)` (`src/Ransys.TransactionCore/Idempotency`). It returns `New` (your callback inserted the row), `ExistingTransaction` (return that transaction; discard the aggregate you built), or `DUPLICATE_REFERENCE_CONFLICT`. The callback runs under a savepoint, because losing the `ux_idempotency_active_reference` race aborts the PG transaction. Don't catch unique violations elsewhere to replicate this.
 - `IDatabaseSession` supports savepoints for this purpose. `Ransys.Workers` hosts `IdempotencyExpiryWorker` (ADR-009 sweep) and requires `ConnectionStrings:TransactionDb` (set locally as a user secret, `UserSecretsId=ransys-workers-dev`; never commit it).
 
+## Provider Adapter contract (M12b)
+
+- C# contract: `Ransys.Adapter.Contracts.V1` (`src/Ransys.Adapter.Contracts/V1`, shapes verbatim from `docs/RANSYS_Provider_Adapter_Contracts_v1.cs`). Wire contract: `Protos/ransys_provider_adapter_v1.proto` → generated `Ransys.Provider.V1`; it must stay identical to the doc proto (`ProtoBaselineTests`). Change neither without a new contract version.
+- Rules live in Adapter.Contracts: `ProviderResultRules` (valid Outcome/Finality pairs, `RequestSent`/transport consistency, `Normalize` → IN_DOUBT, never NOT_SENT/FAILED), `ProviderResults` (CapabilityUnsupported / NotSent / InDoubt factories), `ProviderCapabilityCodes` (= `Domain.Routing.ProviderCapabilities`), `ProviderErrorCategories`, `ProviderResultCodes` (interim codes reusing approved examples; TODO Response Code Catalog v1).
+- `Ransys.Adapter.Sdk`: `ProtoMapper` is the only proto ↔ C# mapping (money as exact decimal strings; mapping choices documented on the class; throws `ProtoMappingException`, never guesses). `GrpcProviderAdapterClient` / `ProviderAdapterGrpcService` and `GrpcProviderCallbackSinkClient` / `ProviderCallbackSinkGrpcService` are thin bindings with no business logic.
+- No hidden retries anywhere: one gRPC call per operation, and never configure a gRPC retry/hedging policy on adapter channels.
+- `RequestSent` is conservative: a gRPC failure that may have reached the adapter becomes IN_DOUBT + AMBIGUOUS with `RequestSent=true`. NOT_SENT only when non-delivery is proven (request not mappable, connection could not be established). TRANSFER/VOID call `TransferAsync`/`VoidAsync`, never reversal/refund.
+
 ## Domain conventions (`src/Ransys.Domain`)
 
 - Value objects are created only through static `Create(...)` factories returning `Result<T>`. They validate and never trim or truncate input. The one exception is the provider response message, which is truncated to 500 characters so an outcome is never lost.

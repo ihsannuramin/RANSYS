@@ -4,4 +4,8 @@
     <ProjectReference Include="../Ransys.Adapter.Contracts/Ransys.Adapter.Contracts.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Grpc.Net.Client" />
+  </ItemGroup>
+
 </Project>

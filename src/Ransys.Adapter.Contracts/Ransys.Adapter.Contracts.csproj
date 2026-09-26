@@ -4,4 +4,15 @@
     <ProjectReference Include="../Ransys.Contracts/Ransys.Contracts.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" />
+    <PackageReference Include="Grpc.Core.Api" />
+    <PackageReference Include="Grpc.Tools" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Copy of docs/RANSYS_Provider_Adapter_v1.proto; ProtoBaselineTests keeps them identical. -->
+    <Protobuf Include="Protos/ransys_provider_adapter_v1.proto" GrpcServices="Both" />
+  </ItemGroup>
+
 </Project>

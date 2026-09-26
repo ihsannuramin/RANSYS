@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Ransys.Adapter.Sdk/Ransys.Adapter.Sdk.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- In-memory gRPC host for the binding tests only. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Grpc.AspNetCore" />
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" />
+  </ItemGroup>
+
+</Project>

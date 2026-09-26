@@ -47,6 +47,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ransys.Persistence.Tests", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ransys.TransactionCore.Tests", "tests\Ransys.TransactionCore.Tests\Ransys.TransactionCore.Tests.csproj", "{583D12D2-5C26-4289-A129-C5FD7D0BAA31}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ransys.Adapter.Tests", "tests\Ransys.Adapter.Tests\Ransys.Adapter.Tests.csproj", "{4ADC2012-0F46-4CDD-8D56-2DD126867F43}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -297,6 +299,18 @@ Global
 		{583D12D2-5C26-4289-A129-C5FD7D0BAA31}.Release|x64.Build.0 = Release|Any CPU
 		{583D12D2-5C26-4289-A129-C5FD7D0BAA31}.Release|x86.ActiveCfg = Release|Any CPU
 		{583D12D2-5C26-4289-A129-C5FD7D0BAA31}.Release|x86.Build.0 = Release|Any CPU
+		{4ADC2012-0F46-4CDD-8D56-2DD126867F43}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4ADC2012-0F46-4CDD-8D56-2DD126867F43}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4ADC2012-0F46-4CDD-8D56-2DD126867F43}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{4ADC2012-0F46-4CDD-8D56-2DD126867F43}.Debug|x64.Build.0 = Debug|Any CPU
+		{4ADC2012-0F46-4CDD-8D56-2DD126867F43}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{4ADC2012-0F46-4CDD-8D56-2DD126867F43}.Debug|x86.Build.0 = Debug|Any CPU
+		{4ADC2012-0F46-4CDD-8D56-2DD126867F43}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4ADC2012-0F46-4CDD-8D56-2DD126867F43}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4ADC2012-0F46-4CDD-8D56-2DD126867F43}.Release|x64.ActiveCfg = Release|Any CPU
+		{4ADC2012-0F46-4CDD-8D56-2DD126867F43}.Release|x64.Build.0 = Release|Any CPU
+		{4ADC2012-0F46-4CDD-8D56-2DD126867F43}.Release|x86.ActiveCfg = Release|Any CPU
+		{4ADC2012-0F46-4CDD-8D56-2DD126867F43}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -322,5 +336,6 @@ Global
 		{1392FF92-38CF-4BB8-A6F3-0CB7D35840A1} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{AD240BAD-CAA3-4EB8-ADE2-777EFDDD4CF7} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{583D12D2-5C26-4289-A129-C5FD7D0BAA31} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{4ADC2012-0F46-4CDD-8D56-2DD126867F43} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal
