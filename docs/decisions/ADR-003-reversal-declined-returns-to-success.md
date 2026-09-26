@@ -1,6 +1,6 @@
 # ADR-003 — Declined Reversal Returns Processing Status to SUCCESS
 
-**Status:** Accepted — recommended option approved by product owner, 2026-09-26
+**Status:** Superseded by the ADR-012 decision (2026-09-27): reversal becomes a child transaction, and a declined reversal no longer touches the original. Remains in force until the ADR-012 refactor is completed.
 
 ## Context
 A reversal is requested on a SUCCESS + POSTED transaction and the provider definitively declines it.

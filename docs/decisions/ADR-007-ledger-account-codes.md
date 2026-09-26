@@ -1,6 +1,6 @@
 # ADR-007 — Placeholder Ledger Account Codes
 
-**Status:** Accepted — recommended option approved by product owner, 2026-09-26
+**Status:** Accepted — recommended option approved by product owner, 2026-09-26; amended by ADR-015 (2026-09-27)
 
 ## Context
 Postings need system accounts: cash clearing, provider payable, fee revenue, adjustment clearing, provider receivable.
@@ -29,3 +29,6 @@ Placeholder convention, with accounts created lazily and idempotently:
 
 ## Consequences
 Final codes will come from Finance. Because codes are produced by a single `LedgerAccounts` factory (`src/Ransys.Domain/Ledger/LedgerAccounts.cs`), adopting them is a data migration, not a code change.
+
+## Amendment (ADR-015, 2026-09-27)
+These internal codes are authoritative semantic identifiers, not placeholders for Finance codes. External GL account codes are configurable mappings from the semantic account type and are never hardcoded into domain or ledger logic.

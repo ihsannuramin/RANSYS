@@ -99,17 +99,26 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 
 Cross-component concurrency (main.md §22) is covered by `tests/Ransys.IntegrationTests/Concurrency/CrossComponentConcurrencyTests.cs`: duplicate provider results from several sources, status check vs reconciliation with contradicting results, callback vs recovery worker, and concurrent reservations with finalizations on one wallet (lock-order / deadlock check).
 
-## Unresolved architecture decisions
+## Architecture decisions
 
-Accepted ADRs are listed in [`docs/decisions/`](docs/decisions/). Items still open:
+All decisions are recorded in [`docs/decisions/`](docs/decisions/) (ADR-001 … ADR-017).
 
-- Final Chart of Accounts codes (placeholders per ADR-007).
-- Refund fee policy (ADR-010).
+Decided on 2026-09-27, implementation pending:
+
+- ADR-012: reversal as a child transaction; the original's processing state is not overwritten (interim reject/no-mutation behavior remains until the refactor lands; supersedes ADR-003).
+- ADR-014: refund fee policy per original fee component (`NONE` default, `PRO_RATA`, `FULL`), never recalculated from current configuration.
+- ADR-016: wallet status semantics (FROZEN blocks new consumption only; CLOSED is terminal with preconditions); freeze/unfreeze/close operations.
+- ADR-017: `supports_transfer` / `supports_void` official; VOID never mapped to reversal/refund.
+
+Decided, no Phase 1 code change needed:
+
+- ADR-015: semantic account types are authoritative; Finance GL codes are configurable mappings (finance export, not the posting path).
+
+Still open:
+
 - Mapping fee components' accounting amounts to provider cost / tax / margin accounts on payment success (Ledger Matrix §13); baseline split implemented, explicit split supported.
-- FROZEN/CLOSED wallet semantics beyond "no new debits" are not specified.
-- Original provider result arriving while a reversal of an unposted transaction is pending (ADR-012, interim: rejected without mutation).
 - Original-side refund summary transitions (PS-11..PS-13) wait for the refund use case.
 - Minimum age before recovering an outcome-less attempt must exceed the longest provider timeout; the recovery worker schedule is not yet configured (service implemented, no hosted loop).
 - Outbox consumers: Backoffice projection with inbox/dedup + `source_version`, optional RabbitMQ publisher, DEAD-event alerting and retention of published rows.
-- Capability codes for TRANSFER and VOID (`supports_transfer`, `supports_void`) are not in Architecture Spec §17; providers must declare them explicitly. Circuit breaker (state transitions, half-open probe limits) and provider health measurement are not implemented; routing only reads their state.
+- Circuit breaker (state transitions, half-open probe limits) and provider health measurement are not implemented; routing only reads their state.
 - Items deferred to later design documents: OpenAPI v1, SIGNED_API contract, Provider Adapter Contract v1, response code catalog, configuration schema, SOAP/ISO8583 profiles.

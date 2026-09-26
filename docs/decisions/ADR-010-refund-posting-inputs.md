@@ -1,6 +1,6 @@
 # ADR-010 — Refund Posting Inputs
 
-**Status:** Accepted — recommended option approved by product owner, 2026-09-26
+**Status:** Accepted; the fee-refund policy is decided by ADR-014 (2026-09-27).
 
 ## Context
 Ledger Posting Rule Matrix OP-10/11/12 refund postings debit "PROVIDER_RECEIVABLE / REFUND_CLEARING" and may reverse fee revenue.

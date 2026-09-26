@@ -1,6 +1,6 @@
 # ADR-012 — Original Result Arriving While a Reversal of an Unposted Transaction Is Pending
 
-**Status:** Proposed — TODO / Architecture Decision Required (interim behavior implemented, see below)
+**Status:** Accepted — product owner decision, 2026-09-27 (supersedes the interim option below; refactor pending)
 
 ## Context
 A payment goes IN_DOUBT (reservation held), then a reversal is started: `processing = REVERSAL_PENDING`, `financial = RESERVED` (State Transition Matrix PS-09 case A). While the reversal is in flight, a definitive result for the **original** request arrives (callback, status check, advice or reconciliation).
@@ -29,3 +29,13 @@ The final behavior (option 2 or 3) needs architecture review because it defines 
 
 ## Consequences
 In this rare interleaving, recovery waits for the reversal result or for reconciliation. The rejected original result must still be persisted in attempt/callback history by the application layer (M7), so no evidence is lost.
+
+## Decision (2026-09-27)
+- A reversal is modeled as a **child transaction** with its own `ransys_transaction_id` and `original_transaction_id` (transaction type REVERSAL), with its own idempotency, attempts and state history.
+- Starting a reversal **does not overwrite** the original transaction's processing state. The original keeps its own truth (e.g. IN_DOUBT, SUCCESS) while the reversal child is processed.
+- The current reject/no-mutation behavior for original results arriving during a reversal stays in place **only until this refactor is completed**.
+
+## Consequences of the decision
+- The interleaving that motivated this ADR disappears: an original result is applied to the original normally while the reversal child is pending. When the reversal child succeeds, the financial effect is chosen from the original's financial state **at that moment** (active reservation → release; posted → compensating reversal).
+- ADR-003 (REVERSAL_PENDING → SUCCESS on the original) is superseded: a declined reversal only fails the child and leaves the original untouched.
+- The original no longer uses REVERSAL_PENDING for the reversal flow. The value stays in the enum and in the DDL CHECK (no destructive schema change).
