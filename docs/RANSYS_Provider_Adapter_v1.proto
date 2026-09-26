@@ -1,0 +1,268 @@
+syntax = "proto3";
+
+package ransys.provider.v1;
+option csharp_namespace = "Ransys.Provider.V1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+
+service ProviderAdapter {
+  rpc GetCapabilities(GetCapabilitiesRequest) returns (GetCapabilitiesResponse);
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  rpc Inquiry(ProviderTransactionRequest) returns (ProviderResult);
+  rpc Payment(ProviderTransactionRequest) returns (ProviderResult);
+  rpc Purchase(ProviderTransactionRequest) returns (ProviderResult);
+  rpc Transfer(ProviderTransactionRequest) returns (ProviderResult);
+  rpc Void(ProviderTransactionRequest) returns (ProviderResult);
+  rpc StatusCheck(ProviderTransactionRequest) returns (ProviderResult);
+  rpc Reversal(ProviderTransactionRequest) returns (ProviderResult);
+  rpc Refund(ProviderTransactionRequest) returns (ProviderResult);
+  rpc Advice(ProviderTransactionRequest) returns (ProviderResult);
+  rpc BalanceInquiry(ProviderTransactionRequest) returns (ProviderResult);
+  rpc GetProviderBalance(GetProviderBalanceRequest) returns (GetProviderBalanceResponse);
+}
+
+service ProviderCallbackSink {
+  rpc SubmitCallback(ProviderCallback) returns (ProviderCallbackAck);
+}
+
+enum TransactionType {
+  TRANSACTION_TYPE_UNSPECIFIED = 0;
+  INQUIRY = 1;
+  PAYMENT = 2;
+  PURCHASE = 3;
+  TRANSFER = 4;
+  REFUND = 5;
+  REVERSAL = 6;
+  VOID = 7;
+  ADVICE = 8;
+  BALANCE_INQUIRY = 9;
+  STATUS_CHECK = 10;
+}
+
+enum ProviderOutcome {
+  PROVIDER_OUTCOME_UNSPECIFIED = 0;
+  SUCCESS = 1;
+  FAILED = 2;
+  PENDING = 3;
+  IN_DOUBT = 4;
+  NOT_SENT = 5;
+}
+
+enum ResultFinality {
+  RESULT_FINALITY_UNSPECIFIED = 0;
+  DEFINITIVE = 1;
+  NON_FINAL = 2;
+  AMBIGUOUS = 3;
+  NOT_APPLICABLE = 4;
+}
+
+enum TransportStatus {
+  TRANSPORT_STATUS_UNSPECIFIED = 0;
+  NOT_SENT_TRANSPORT = 1;
+  SENT = 2;
+  RESPONSE = 3;
+  TIMEOUT = 4;
+  CONNECTION_ERROR = 5;
+  PROTOCOL_ERROR = 6;
+}
+
+enum EndpointType {
+  ENDPOINT_TYPE_UNSPECIFIED = 0;
+  MERCHANT = 1;
+  CUSTOMER = 2;
+  BANK_ACCOUNT = 3;
+  WALLET = 4;
+  BILLER = 5;
+  PROVIDER = 6;
+  VIRTUAL_ACCOUNT = 7;
+  MOBILE_NUMBER = 8;
+  CUSTOM = 9;
+}
+
+enum HealthState {
+  HEALTH_STATE_UNSPECIFIED = 0;
+  HEALTHY = 1;
+  DEGRADED = 2;
+  UNHEALTHY = 3;
+}
+
+message Money {
+  string value = 1;
+  string currency = 2;
+  int32 currency_scale = 3;
+  int32 currency_definition_version = 4;
+}
+
+message ProductReference {
+  string product_id = 1;
+  string product_code = 2;
+  string category = 3;
+}
+
+message Customer {
+  optional string customer_id = 1;
+  optional string external_customer_reference = 2;
+  optional string account_number = 3;
+  optional string phone_number = 4;
+  optional string name = 5;
+  google.protobuf.Struct metadata = 6;
+}
+
+message TransactionEndpoint {
+  EndpointType type = 1;
+  string identifier = 2;
+  optional string institution_code = 3;
+  optional string account_reference = 4;
+  google.protobuf.Struct metadata = 5;
+}
+
+message ExternalReference {
+  string type = 1;
+  string value = 2;
+  string source = 3;
+  bool is_primary = 4;
+}
+
+message TransactionReferences {
+  string client_reference = 1;
+  optional string merchant_reference = 2;
+  optional string stan = 3;
+  optional string rrn = 4;
+  optional string provider_reference = 5;
+  optional string provider_stan = 6;
+  optional string provider_rrn = 7;
+  repeated ExternalReference external_references = 8;
+}
+
+message CorrelationContext {
+  string ransys_transaction_id = 1;
+  string correlation_id = 2;
+  string trace_id = 3;
+}
+
+message ProviderIdentity {
+  string provider_id = 1;
+  string provider_code = 2;
+  string adapter_service = 3;
+}
+
+message TimeoutPolicy {
+  google.protobuf.Duration connect_timeout = 1;
+  google.protobuf.Duration read_timeout = 2;
+  int32 max_retry = 3;
+  google.protobuf.Duration retry_delay = 4;
+  string retry_backoff = 5;
+  bool status_check_after_timeout = 6;
+  bool reversal_after_timeout = 7;
+}
+
+message ConcurrencyPolicy {
+  optional int32 max_concurrent_requests = 1;
+  optional int32 max_queue_depth = 2;
+  optional int32 rate_limit_per_second = 3;
+}
+
+message ProviderExecutionContext {
+  ProviderIdentity provider = 1;
+  optional string endpoint_profile_id = 2;
+  optional int64 product_mapping_version = 3;
+  TimeoutPolicy timeout_policy = 4;
+  ConcurrencyPolicy concurrency_policy = 5;
+  repeated string capabilities = 6;
+  optional string authentication_profile_reference = 7;
+  int64 policy_version = 8;
+}
+
+message ProviderTransactionRequest {
+  string ransys_transaction_id = 1;
+  optional string original_transaction_id = 2;
+  string attempt_id = 3;
+  TransactionType transaction_type = 4;
+  ProductReference product = 5;
+  optional Money amount = 6;
+  optional Customer customer = 7;
+  optional TransactionEndpoint source = 8;
+  optional TransactionEndpoint destination = 9;
+  TransactionReferences references = 10;
+  ProviderExecutionContext execution_context = 11;
+  CorrelationContext correlation = 12;
+  google.protobuf.Struct metadata = 13;
+}
+
+message ProviderError {
+  string category = 1;
+  string code = 2;
+  string message = 3;
+  bool retryable_transport_error = 4;
+  optional string raw_code = 5;
+}
+
+message ProviderTransportResult {
+  TransportStatus status = 1;
+  bool request_sent = 2;
+  optional google.protobuf.Duration connect_duration = 3;
+  optional google.protobuf.Duration round_trip_duration = 4;
+  optional ProviderError error = 5;
+}
+
+message ProviderRetryHint {
+  bool safe_to_retry_transport = 1;
+  optional google.protobuf.Duration suggested_delay = 2;
+}
+
+message ProviderResult {
+  ProviderOutcome outcome = 1;
+  ResultFinality finality = 2;
+  ProviderTransportResult transport = 3;
+  string ransys_response_code = 4;
+  optional string provider_response_code = 5;
+  optional string provider_response_message = 6;
+  TransactionReferences references = 7;
+  google.protobuf.Struct data = 8;
+  optional ProviderRetryHint retry_hint = 9;
+  google.protobuf.Timestamp received_at = 10;
+  optional string raw_request_reference = 11;
+  optional string raw_response_reference = 12;
+}
+
+message GetCapabilitiesRequest { ProviderIdentity provider = 1; }
+message GetCapabilitiesResponse {
+  repeated string capability_codes = 1;
+  string contract_version = 2;
+}
+
+message HealthCheckRequest { ProviderIdentity provider = 1; }
+message HealthCheckResponse {
+  HealthState state = 1;
+  optional int32 latency_ms = 2;
+  optional string diagnostic_code = 3;
+  optional string diagnostic_message = 4;
+  google.protobuf.Timestamp observed_at = 5;
+}
+
+message GetProviderBalanceRequest {
+  ProviderIdentity provider = 1;
+  optional string balance_account_reference = 2;
+}
+message GetProviderBalanceResponse {
+  Money balance = 1;
+  google.protobuf.Timestamp observed_at = 2;
+  string source = 3;
+}
+
+message ProviderCallback {
+  string provider_id = 1;
+  optional string callback_id = 2;
+  string original_ransys_transaction_id = 3;
+  optional string provider_reference = 4;
+  ProviderResult result = 5;
+  CorrelationContext correlation = 6;
+  google.protobuf.Timestamp received_at = 7;
+}
+
+message ProviderCallbackAck {
+  bool accepted = 1;
+  optional string acknowledgement_code = 2;
+}

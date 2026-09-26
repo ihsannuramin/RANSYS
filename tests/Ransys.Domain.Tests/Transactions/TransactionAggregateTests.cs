@@ -37,6 +37,7 @@ public sealed class TransactionAggregateTests
             TransactionReferences.Create(bagReference).Value, ExtensionMetadata.Empty, T0);
 
         Assert.Equal(ErrorCodes.OriginalTransactionRequired, Transaction.Create(Draft(TransactionType.Refund, Rp(1m))).Error.Code);
+        Assert.Equal(ErrorCodes.OriginalTransactionRequired, Transaction.Create(Draft(TransactionType.Void, Rp(1m))).Error.Code); // ADR-019
         Assert.Equal(ErrorCodes.ReferenceMismatch, Transaction.Create(Draft(TransactionType.Payment, Rp(1m), "OTHER")).Error.Code);
         Assert.True(Transaction.Create(Draft(TransactionType.Inquiry, Rp(0m))).IsSuccess);
     }

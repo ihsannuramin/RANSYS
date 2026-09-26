@@ -1,0 +1,497 @@
+openapi: 3.1.0
+info:
+  title: RANSYS Merchant Transaction API
+  version: 1.0.0
+  summary: Merchant-facing transaction API for RANSYS.
+  description: |
+    RANSYS API v1 exposes transaction-type-specific endpoints.
+    Breaking behavior changes require a new major API version.
+    Business transaction outcomes are represented by responseCode + transactionStatus.
+    Provider timeout may return transactionStatus=IN_DOUBT and must not be interpreted as FAILED.
+servers:
+  - url: https://{host}
+    variables:
+      host:
+        default: ransys.example.internal
+
+security:
+  - MutualTLS: []
+    ClientIdHeader: []
+    TimestampHeader: []
+    NonceHeader: []
+    ContentDigestHeader: []
+    SignatureInputHeader: []
+    SignatureHeader: []
+
+paths:
+  /api/v1/inquiries:
+    post:
+      operationId: createInquiry
+      summary: Submit an inquiry transaction
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/InquiryRequest'}
+      responses:
+        '200':
+          description: Inquiry accepted and processed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TransactionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/DuplicateConflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+
+  /api/v1/payments:
+    post:
+      operationId: createPayment
+      summary: Submit a payment transaction
+      description: |
+        RANSYS persists the transaction and atomically reserves required wallet balance before
+        any provider financial request is sent.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PaymentRequest'}
+      responses:
+        '200':
+          description: Transaction accepted into normal RANSYS processing.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TransactionResponse'}
+              examples:
+                success:
+                  value:
+                    ransysTransactionId: 0199aabb-ccdd-7eef-8123-0123456789ab
+                    clientReference: PAY-20260927-001
+                    responseCode: "0000"
+                    responseMessage: Success
+                    transactionStatus: SUCCESS
+                    data: {}
+                    timestamp: "2026-09-27T10:15:31+07:00"
+                inDoubt:
+                  value:
+                    ransysTransactionId: 0199aabb-ccdd-7eef-8123-0123456789ab
+                    clientReference: PAY-20260927-001
+                    responseCode: "1002"
+                    responseMessage: Transaction response timeout
+                    transactionStatus: IN_DOUBT
+                    data: {}
+                    timestamp: "2026-09-27T10:15:35+07:00"
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/DuplicateConflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+
+  /api/v1/transfers:
+    post:
+      operationId: createTransfer
+      summary: Submit a transfer transaction
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TransferRequest'}
+      responses:
+        '200':
+          description: Transfer accepted and processed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TransactionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/DuplicateConflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+
+  /api/v1/refunds:
+    post:
+      operationId: createRefund
+      summary: Create a refund child transaction
+      description: |
+        Refund has its own ransysTransactionId and references the original transaction.
+        Refundable fees are derived from the original transaction fee-component policy.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RefundRequest'}
+      responses:
+        '200':
+          description: Refund child transaction accepted and processed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TransactionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/DuplicateConflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+
+  /api/v1/reversals:
+    post:
+      operationId: createReversal
+      summary: Create a reversal child transaction
+      description: |
+        Reversal has its own ransysTransactionId and originalTransactionId.
+        Starting reversal does not overwrite the original transaction processing state.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReversalRequest'}
+      responses:
+        '200':
+          description: Reversal child transaction accepted and processed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TransactionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/DuplicateConflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+
+  /api/v1/voids:
+    post:
+      operationId: createVoid
+      summary: Create a void transaction
+      description: VOID is explicit and is not implicitly mapped to REVERSAL or REFUND.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/VoidRequest'}
+      responses:
+        '200':
+          description: Void transaction accepted and processed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TransactionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/DuplicateConflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+
+  /api/v1/transactions/{ransysTransactionId}:
+    get:
+      operationId: getTransaction
+      summary: Get current transaction status
+      security:
+        - MutualTLS: []
+          ClientIdHeader: []
+          TimestampHeader: []
+          NonceHeader: []
+          SignatureInputHeader: []
+          SignatureHeader: []
+      parameters:
+        - name: ransysTransactionId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Current transaction view.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TransactionDetailResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Transaction not found or not visible to authenticated client.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiErrorResponse'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+
+components:
+  securitySchemes:
+    MutualTLS:
+      type: mutualTLS
+    ClientIdHeader:
+      type: apiKey
+      in: header
+      name: X-Ransys-Client-Id
+    TimestampHeader:
+      type: apiKey
+      in: header
+      name: X-Ransys-Timestamp
+    NonceHeader:
+      type: apiKey
+      in: header
+      name: X-Ransys-Nonce
+    ContentDigestHeader:
+      type: apiKey
+      in: header
+      name: Content-Digest
+    SignatureInputHeader:
+      type: apiKey
+      in: header
+      name: Signature-Input
+    SignatureHeader:
+      type: apiKey
+      in: header
+      name: Signature
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Optional explicit retry key; never replaces clientReference.
+      schema:
+        type: string
+        maxLength: 128
+
+  schemas:
+    DecimalAmount:
+      type: string
+      pattern: '^-?(0|[1-9][0-9]*)(\.[0-9]{1,8})?$'
+      examples: ["100000.00"]
+
+    MoneyInput:
+      type: object
+      additionalProperties: false
+      required: [value, currency]
+      properties:
+        value: {$ref: '#/components/schemas/DecimalAmount'}
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          examples: [IDR]
+
+    Metadata:
+      type: object
+      additionalProperties: true
+
+    CustomerInput:
+      type: object
+      additionalProperties: false
+      properties:
+        customerId: {type: string, maxLength: 128}
+        externalCustomerReference: {type: string, maxLength: 256}
+        accountNumber: {type: string, maxLength: 256}
+        phoneNumber: {type: string, maxLength: 64}
+        name: {type: string, maxLength: 256}
+        metadata: {$ref: '#/components/schemas/Metadata'}
+
+    EndpointInput:
+      type: object
+      additionalProperties: false
+      required: [type, identifier]
+      properties:
+        type:
+          type: string
+          enum: [MERCHANT, CUSTOMER, BANK_ACCOUNT, WALLET, BILLER, PROVIDER, VIRTUAL_ACCOUNT, MOBILE_NUMBER, CUSTOM]
+        identifier: {type: string, maxLength: 256}
+        institutionCode: {type: string, maxLength: 64}
+        accountReference: {type: string, maxLength: 256}
+        metadata: {$ref: '#/components/schemas/Metadata'}
+
+    InquiryRequest:
+      type: object
+      additionalProperties: false
+      required: [clientReference, productCode, requestTimestamp]
+      properties:
+        clientReference: {type: string, minLength: 1, maxLength: 128}
+        productCode: {type: string, minLength: 1, maxLength: 64}
+        customer: {$ref: '#/components/schemas/CustomerInput'}
+        destination: {$ref: '#/components/schemas/EndpointInput'}
+        requestTimestamp: {type: string, format: date-time}
+        metadata: {$ref: '#/components/schemas/Metadata'}
+
+    PaymentRequest:
+      type: object
+      additionalProperties: false
+      required: [clientReference, productCode, amount, requestTimestamp]
+      properties:
+        clientReference: {type: string, minLength: 1, maxLength: 128}
+        productCode: {type: string, minLength: 1, maxLength: 64}
+        amount: {$ref: '#/components/schemas/MoneyInput'}
+        customer: {$ref: '#/components/schemas/CustomerInput'}
+        source: {$ref: '#/components/schemas/EndpointInput'}
+        destination: {$ref: '#/components/schemas/EndpointInput'}
+        merchantReference: {type: string, maxLength: 128}
+        requestTimestamp: {type: string, format: date-time}
+        metadata: {$ref: '#/components/schemas/Metadata'}
+
+    TransferRequest:
+      type: object
+      additionalProperties: false
+      required: [clientReference, productCode, amount, source, destination, requestTimestamp]
+      properties:
+        clientReference: {type: string, minLength: 1, maxLength: 128}
+        productCode: {type: string, minLength: 1, maxLength: 64}
+        amount: {$ref: '#/components/schemas/MoneyInput'}
+        source: {$ref: '#/components/schemas/EndpointInput'}
+        destination: {$ref: '#/components/schemas/EndpointInput'}
+        customer: {$ref: '#/components/schemas/CustomerInput'}
+        requestTimestamp: {type: string, format: date-time}
+        metadata: {$ref: '#/components/schemas/Metadata'}
+
+    RefundRequest:
+      type: object
+      additionalProperties: false
+      required: [clientReference, originalTransactionId, refundAmount, reason, requestTimestamp]
+      properties:
+        clientReference: {type: string, minLength: 1, maxLength: 128}
+        originalTransactionId: {type: string, format: uuid}
+        refundAmount: {$ref: '#/components/schemas/MoneyInput'}
+        reason: {type: string, minLength: 1, maxLength: 500}
+        requestTimestamp: {type: string, format: date-time}
+        metadata: {$ref: '#/components/schemas/Metadata'}
+
+    ReversalRequest:
+      type: object
+      additionalProperties: false
+      required: [clientReference, originalTransactionId, reason, requestTimestamp]
+      properties:
+        clientReference: {type: string, minLength: 1, maxLength: 128}
+        originalTransactionId: {type: string, format: uuid}
+        reason: {type: string, minLength: 1, maxLength: 500}
+        requestTimestamp: {type: string, format: date-time}
+        metadata: {$ref: '#/components/schemas/Metadata'}
+
+    VoidRequest:
+      type: object
+      additionalProperties: false
+      required: [clientReference, originalTransactionId, reason, requestTimestamp]
+      properties:
+        clientReference: {type: string, minLength: 1, maxLength: 128}
+        originalTransactionId: {type: string, format: uuid}
+        reason: {type: string, minLength: 1, maxLength: 500}
+        requestTimestamp: {type: string, format: date-time}
+        metadata: {$ref: '#/components/schemas/Metadata'}
+
+    TransactionStatus:
+      type: string
+      enum: [RECEIVED, VALIDATED, PROCESSING, PENDING, IN_DOUBT, SUCCESS, FAILED, REVERSED, PARTIALLY_REFUNDED, REFUNDED]
+
+    FinancialStatus:
+      type: string
+      enum: [NONE, RESERVED, POSTED, RELEASED, REVERSAL_PENDING, REVERSED, REFUND_PENDING, PARTIALLY_REFUNDED, REFUNDED, ADJUSTED]
+
+    ReconciliationStatus:
+      type: string
+      enum: [UNMATCHED, PENDING, MATCHED, EXCEPTION, RESOLVED]
+
+    SettlementStatus:
+      type: string
+      enum: [NOT_APPLICABLE, PENDING, INCLUDED, APPROVED, READY_TO_PAY, SETTLED, ADJUSTED]
+
+    PublicReferences:
+      type: object
+      additionalProperties: false
+      properties:
+        merchantReference: {type: string}
+        stan: {type: string}
+        rrn: {type: string}
+
+    TransactionResponse:
+      type: object
+      additionalProperties: false
+      required: [ransysTransactionId, clientReference, responseCode, responseMessage, transactionStatus, data, timestamp]
+      properties:
+        ransysTransactionId: {type: string, format: uuid}
+        clientReference: {type: string}
+        responseCode: {type: string, pattern: '^[0-9]{4}$'}
+        responseMessage: {type: string}
+        transactionStatus: {$ref: '#/components/schemas/TransactionStatus'}
+        references: {$ref: '#/components/schemas/PublicReferences'}
+        data:
+          type: object
+          additionalProperties: true
+        timestamp: {type: string, format: date-time}
+
+    TransactionDetailResponse:
+      type: object
+      additionalProperties: false
+      required:
+        [ransysTransactionId, clientReference, transactionType, processingStatus, financialStatus, reconciliationStatus, settlementStatus, responseCode, receivedAt]
+      properties:
+        ransysTransactionId: {type: string, format: uuid}
+        originalTransactionId: {type: string, format: uuid}
+        clientReference: {type: string}
+        transactionType:
+          type: string
+          enum: [INQUIRY, PAYMENT, PURCHASE, TRANSFER, REFUND, REVERSAL, VOID, ADVICE, BALANCE_INQUIRY, STATUS_CHECK]
+        processingStatus: {$ref: '#/components/schemas/TransactionStatus'}
+        financialStatus: {$ref: '#/components/schemas/FinancialStatus'}
+        reconciliationStatus: {$ref: '#/components/schemas/ReconciliationStatus'}
+        settlementStatus: {$ref: '#/components/schemas/SettlementStatus'}
+        responseCode: {type: string, pattern: '^[0-9]{4}$'}
+        responseMessage: {type: string}
+        references: {$ref: '#/components/schemas/PublicReferences'}
+        receivedAt: {type: string, format: date-time}
+        completedAt: {type: string, format: date-time}
+        data:
+          type: object
+          additionalProperties: true
+
+    ApiErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [errorCode, errorMessage, timestamp]
+      properties:
+        errorCode: {type: string}
+        errorMessage: {type: string}
+        field: {type: string}
+        correlationId: {type: string}
+        timestamp: {type: string, format: date-time}
+
+  responses:
+    BadRequest:
+      description: Malformed/schema/canonical validation failure before normal transaction processing.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiErrorResponse'}
+    Unauthorized:
+      description: Client identity, signature, certificate, timestamp, or nonce validation failed.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiErrorResponse'}
+    Forbidden:
+      description: Authenticated client lacks permission or network policy denies access.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiErrorResponse'}
+    DuplicateConflict:
+      description: Same active clientReference used with a different fingerprint.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiErrorResponse'}
+    TooManyRequests:
+      description: Rejected by pre-provider rate limiting/backpressure.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiErrorResponse'}
+    ServiceUnavailable:
+      description: Mandatory durable/financial dependency unavailable; no unsafe provider call is made.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiErrorResponse'}

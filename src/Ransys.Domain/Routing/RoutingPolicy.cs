@@ -4,26 +4,36 @@ using Ransys.Domain.Transactions;
 
 namespace Ransys.Domain.Routing;
 
-/// <summary>Provider capability codes (Architecture Spec §17; <c>integration.provider_capabilities.capability_code</c>).</summary>
+/// <summary>
+/// Provider capability codes (<c>integration.provider_capabilities.capability_code</c>). ADR-018: the Provider Adapter
+/// Contract v1 catalog (§2), uppercase; migration 0007 renamed the earlier <c>supports_*</c> codes.
+/// </summary>
 public static class ProviderCapabilities
 {
-    public const string Inquiry = "supports_inquiry";
-    public const string Payment = "supports_payment";
-    public const string Purchase = "supports_purchase";
-    public const string StatusCheck = "supports_status_check";
-    public const string Reversal = "supports_reversal";
-    public const string Refund = "supports_refund";
-    public const string Advice = "supports_advice";
-    public const string Callback = "supports_callback";
-    public const string BalanceCheck = "supports_balance_check";
-    public const string Reconciliation = "supports_reconciliation";
-    public const string SettlementFile = "supports_settlement_file";
+    public const string Inquiry = "INQUIRY";
+    public const string Payment = "PAYMENT";
+    public const string Purchase = "PURCHASE";
+    public const string StatusCheck = "STATUS_CHECK";
+    public const string Reversal = "REVERSAL";
+    public const string Refund = "REFUND";
+    public const string Advice = "ADVICE";
+    public const string Callback = "CALLBACK";
+    public const string BalanceCheck = "BALANCE_CHECK";
+    public const string Reconciliation = "RECONCILIATION";
+    public const string SettlementFile = "SETTLEMENT_FILE";
 
     /// <summary>ADR-017.</summary>
-    public const string Transfer = "supports_transfer";
+    public const string Transfer = "TRANSFER";
 
     /// <summary>ADR-017: explicit; never implied by, or implying, <see cref="Reversal"/> or <see cref="Refund"/>.</summary>
-    public const string Void = "supports_void";
+    public const string Void = "VOID";
+
+    /// <summary>The whole catalog (Provider Adapter Contract v1 §2).</summary>
+    public static IReadOnlyList<string> All { get; } =
+    [
+        Inquiry, Payment, Purchase, Transfer, Void, StatusCheck, Reversal, Refund, Advice, Callback, BalanceCheck,
+        Reconciliation, SettlementFile,
+    ];
 
     /// <summary>Capability a provider needs to receive a transaction of <paramref name="type"/>; null if not routable.</summary>
     public static string? RequiredFor(TransactionType type) => type switch

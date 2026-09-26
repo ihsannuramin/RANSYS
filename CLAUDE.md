@@ -55,15 +55,20 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 - A reversal is a **child transaction** (type REVERSAL, own id, `original_transaction_id`, idempotency, attempts, history) started by `ReversalService.StartAsync`. Never change the original's state when starting a reversal; the original has no REVERSAL_PENDING any more.
 - Lock order is parent → child: `TransactionFinalizationService` locks the original before the child. On child SUCCESS, `Transaction.ApplyReversalConfirmed` makes the original REVERSED in the same DB transaction. The ledger effect follows the original's financial state at that moment (RESERVED → `REVERSAL_RELEASE`, POSTED → compensating `TX:<original>:REVERSAL:<child>`). A declined child fails alone.
 
+## Refund and VOID children (ADR-023, ADR-019)
+
+- A refund is a child transaction too. Check `Transaction.AuthorizeRefund()` on the original; when the child succeeds, call `PostRefundAsync` and `Transaction.ApplyRefundCompleted(child, fullyRefunded, ctx)` in the same DB transaction (it returns `LedgerAction.None`). The original goes SUCCESS → PARTIALLY_REFUNDED / REFUNDED directly and never uses REFUND_PENDING.
+- VOID fails closed: `AuthorizeVoid()` allows the same states as a reversal, and `RecordVoidConfirmed` only sets the original's reconciliation to EXCEPTION. Never move money for a VOID until its semantics have an ADR.
+
 ## Transaction attempts (ADR-005)
 
-- Create attempts only via `TransactionAttemptService.StartAsync` while holding the transaction row lock, and **commit before calling the provider**. It runs `Transaction.AuthorizeAttempt`, so there are no new financial requests after a possible send and attempts only target the current routed provider. Record results with `RecordOutcomeAsync`, exactly once.
+- Create attempts only via `TransactionAttemptService.StartAsync` while holding the transaction row lock, and **commit before calling the provider**. It runs `Transaction.AuthorizeAttempt`, so there are no new financial requests after a possible send and attempts only target the current routed provider. The primary attempt type must match the transaction type (`Transaction.PrimaryAttemptTypeFor`: Payment/Purchase → PAYMENT, Transfer → TRANSFER, Refund, Reversal, Void, Inquiry, BalanceInquiry). Record results with `RecordOutcomeAsync`, exactly once.
 - DB representation: a started row is `request_sent=true, transport_status='SENT', outcome_recorded_at NULL` (migration `0004`). Only `outcome_recorded_at IS NOT NULL` means an outcome exists. Never downgrade `request_sent` except through a recorded adapter outcome.
-- Map results with `AttemptResolution.Classify`. `AttemptRecoveryService` turns outcome-less attempts into IN_DOUBT (never failover or release).
+- Map results with `AttemptResolution.Classify`. `PROTOCOL_ERROR` (ADR-018) never proves not-sent; only NOT_SENT / CONNECTION_ERROR with `request_sent=false` do. `AttemptRecoveryService` turns outcome-less attempts into IN_DOUBT (never failover or release).
 
 ## Routing
 
-- `RoutingService.RouteAsync` (`src/Ransys.Routing`) reads the active ROUTING config version (`ConfigurationService`, fails closed with `CONFIGURATION_NOT_AVAILABLE`) and applies `RoutingPolicy` (`src/Ransys.Domain/Routing`). It picks the lowest priority number among eligible providers. Excluded are: route disabled, provider inactive, no operational state row, manual disable (a `manual_disabled_until` in the past means re-enabled), circuit OPEN, UNHEALTHY, missing capability (`ProviderCapabilities.RequiredFor`), or already tried (`ExcludedProviders`). DEGRADED and HALF_OPEN stay eligible. Type-specific routes override wildcard (`transaction_type IS NULL`) routes.
+- `RoutingService.RouteAsync` (`src/Ransys.Routing`) reads the active ROUTING config version (`ConfigurationService`, fails closed with `CONFIGURATION_NOT_AVAILABLE`) and applies `RoutingPolicy` (`src/Ransys.Domain/Routing`). It picks the lowest priority number among eligible providers. Excluded are: route disabled, provider inactive, no operational state row, manual disable (a `manual_disabled_until` in the past means re-enabled), circuit OPEN, UNHEALTHY, missing capability (`ProviderCapabilities.RequiredFor`; codes are the uppercase adapter-contract catalog, ADR-018), or already tried (`ExcludedProviders`). DEGRADED and HALF_OPEN stay eligible. Type-specific routes override wildcard (`transaction_type IS NULL`) routes.
 - Routing never decides whether a failover is safe; that is `Transaction.RecordFailover` / `AuthorizeAttempt`. Capture the result with `RoutingResult.ToInitialDecision()` and store `ConfigVersionId` in the transaction's configuration snapshot. No weighted, least-cost or smart routing.
 
 ## Transactional outbox

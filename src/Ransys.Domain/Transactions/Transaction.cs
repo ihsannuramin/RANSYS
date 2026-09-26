@@ -231,7 +231,7 @@ public sealed class Transaction
         if (TransactionTypeRules.RequiresOriginalTransaction(draft.Type) && draft.Identity.OriginalTransactionId is null)
         {
             return RansysError.Validation(
-                ErrorCodes.OriginalTransactionRequired, "Refund and reversal transactions must reference the original transaction.", "originalTransactionId");
+                ErrorCodes.OriginalTransactionRequired, "Refund, reversal and void transactions must reference the original transaction.", "originalTransactionId");
         }
 
         var transaction = new Transaction(draft);
@@ -393,12 +393,14 @@ public sealed class Transaction
     }
 
     /// <summary>
-    /// Decides whether a new provider attempt may be created (ADR-005, ADR-012, State Transition Matrix §15, §64–66):
+    /// Decides whether a new provider attempt may be created (ADR-005, ADR-012, ADR-019, State Transition Matrix §15, §64–66):
     /// <list type="bullet">
     /// <item>attempts always target the current routed provider (other providers only via <see cref="RecordFailover"/>);</item>
-    /// <item>the primary request (PAYMENT, REFUND, REVERSAL) is allowed only while PROCESSING and only if every earlier
-    /// primary request provably never left RANSYS; there is no hidden retry after a possible send;</item>
-    /// <item>REVERSAL attempts belong to a REVERSAL child transaction (ADR-012), never to the original;</item>
+    /// <item>a primary request must match the transaction type (see <see cref="PrimaryAttemptTypeFor"/>): e.g. REVERSAL
+    /// attempts belong to a REVERSAL child transaction (ADR-012), never to the original;</item>
+    /// <item>a primary request is allowed only while PROCESSING; for the financial requests (PAYMENT, TRANSFER, REFUND,
+    /// REVERSAL, VOID) only if every earlier financial request provably never left RANSYS: no hidden retry after a
+    /// possible send;</item>
     /// <item>STATUS_CHECK/ADVICE are allowed while the outcome is open (PROCESSING/PENDING/IN_DOUBT).</item>
     /// </list>
     /// </summary>
@@ -424,10 +426,14 @@ public sealed class Transaction
 
         switch (attemptType)
         {
-            case AttemptType.Payment or AttemptType.Refund or AttemptType.Reversal:
-                if (attemptType == AttemptType.Reversal && Type != TransactionType.Reversal)
+            case AttemptType.Payment or AttemptType.Transfer or AttemptType.Refund or AttemptType.Reversal or AttemptType.Void
+                or AttemptType.Inquiry or AttemptType.BalanceInquiry:
+                if (PrimaryAttemptTypeFor(Type) != attemptType)
                 {
-                    return AttemptNotAllowed(attemptType, "a reversal request is sent by a REVERSAL child transaction (ADR-012)");
+                    return AttemptNotAllowed(
+                        attemptType,
+                        $"the primary request of a {CanonicalCodes.TransactionType.ToCode(Type)} transaction is not"
+                        + $" {CanonicalCodes.AttemptType.ToCode(attemptType)} (a reversal is sent by a REVERSAL child transaction, ADR-012)");
                 }
 
                 if (ProcessingStatus != ProcessingStatus.Processing)
@@ -435,18 +441,17 @@ public sealed class Transaction
                     return AttemptNotAllowed(attemptType, "a primary request can only be sent while PROCESSING");
                 }
 
-                var possiblySent = priorAttempts.FirstOrDefault(a =>
-                    a.AttemptType is AttemptType.Payment or AttemptType.Refund or AttemptType.Reversal && a.MayHaveReachedProvider);
+                if (!IsFinancialRequest(attemptType))
+                {
+                    return Result.Success();
+                }
+
+                var possiblySent = priorAttempts.FirstOrDefault(a => IsFinancialRequest(a.AttemptType) && a.MayHaveReachedProvider);
                 return possiblySent is null
                     ? Result.Success()
                     : RansysError.Financial(
                         ErrorCodes.FailoverNotAllowed,
                         $"Attempt {possiblySent.AttemptNumber} may have reached the provider; a new request is not allowed (IN_DOUBT handling applies).");
-
-            case AttemptType.Inquiry:
-                return ProcessingStatus == ProcessingStatus.Processing
-                    ? Result.Success()
-                    : AttemptNotAllowed(attemptType, "an inquiry can only be sent while PROCESSING");
 
             case AttemptType.StatusCheck or AttemptType.Advice:
                 return ProcessingStatus is ProcessingStatus.Processing or ProcessingStatus.Pending or ProcessingStatus.InDoubt
@@ -457,6 +462,26 @@ public sealed class Transaction
                 return AttemptNotAllowed(attemptType, "unknown attempt type");
         }
     }
+
+    /// <summary>
+    /// The attempt type of this transaction type's own provider request; null when the type has no primary request
+    /// (advice, status check and internal flows).
+    /// </summary>
+    public static AttemptType? PrimaryAttemptTypeFor(TransactionType type) => type switch
+    {
+        TransactionType.Payment or TransactionType.Purchase => AttemptType.Payment,
+        TransactionType.Transfer => AttemptType.Transfer,
+        TransactionType.Refund => AttemptType.Refund,
+        TransactionType.Reversal => AttemptType.Reversal,
+        TransactionType.Void => AttemptType.Void,
+        TransactionType.Inquiry => AttemptType.Inquiry,
+        TransactionType.BalanceInquiry => AttemptType.BalanceInquiry,
+        _ => null,
+    };
+
+    /// <summary>Requests that may move money at the provider: never resent after a possible send (ADR-005).</summary>
+    private static bool IsFinancialRequest(AttemptType attemptType) =>
+        attemptType is AttemptType.Payment or AttemptType.Transfer or AttemptType.Refund or AttemptType.Reversal or AttemptType.Void;
 
     private RansysError AttemptNotAllowed(AttemptType attemptType, string reason) =>
         RansysError.Conflict(
@@ -609,8 +634,95 @@ public sealed class Transaction
         };
     }
 
-    // TODO (refund use case): original-side refund summary transitions (PS-11..PS-13) need cumulative refund
-    // tracking and the refund fee policy (ADR-010); they are declared in TransactionTransitions but not exposed yet.
+    /// <summary>
+    /// ADR-023: whether a REFUND child transaction may be started for this (original) transaction. Refundable are
+    /// reserving transactions that are SUCCESS + POSTED or PARTIALLY_REFUNDED + PARTIALLY_REFUNDED. Starting the refund
+    /// changes nothing on the original (no REFUND_PENDING). The amount limit (cumulative refunds never exceed the posted
+    /// amount) is enforced by the Ledger Posting Service.
+    /// </summary>
+    public Result AuthorizeRefund()
+    {
+        var refundable = RequiresReservation && (ProcessingStatus, FinancialStatus) is
+            (ProcessingStatus.Success, FinancialStatus.Posted)
+            or (ProcessingStatus.PartiallyRefunded, FinancialStatus.PartiallyRefunded);
+
+        return refundable
+            ? Result.Success()
+            : RansysError.Conflict(
+                ErrorCodes.RefundNotAllowed,
+                $"Transaction {Id} cannot be refunded in processing={CanonicalCodes.ProcessingStatus.ToCode(ProcessingStatus)}"
+                + $" financial={CanonicalCodes.FinancialStatus.ToCode(FinancialStatus)}.");
+    }
+
+    /// <summary>
+    /// ADR-023: the REFUND child <paramref name="refundTransactionId"/> succeeded. Its refund posting
+    /// (<c>TX:&lt;original&gt;:REFUND:&lt;ref&gt;</c>) is executed separately by the caller in the same database
+    /// transaction, so this always returns <see cref="LedgerAction.None"/>.
+    /// <list type="bullet">
+    /// <item>SUCCESS + POSTED → PARTIALLY_REFUNDED or REFUNDED (both dimensions);</item>
+    /// <item>PARTIALLY_REFUNDED → REFUNDED when <paramref name="fullyRefunded"/>; otherwise no status change;</item>
+    /// <item>already REFUNDED → no change; anything else is an invalid transition.</item>
+    /// </list>
+    /// </summary>
+    public Result<TransitionOutcome> ApplyRefundCompleted(TransactionId refundTransactionId, bool fullyRefunded, TransitionContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        if (refundTransactionId == Id)
+        {
+            return RansysError.Validation(ErrorCodes.OriginalTransactionSelfReference, "A transaction cannot refund itself.", "refundTransactionId");
+        }
+
+        if (!RequiresReservation)
+        {
+            return Invalid(nameof(ApplyRefundCompleted));
+        }
+
+        return (ProcessingStatus, FinancialStatus, fullyRefunded) switch
+        {
+            (ProcessingStatus.Refunded, FinancialStatus.Refunded, _) => TransitionOutcome.NoChange,
+            (ProcessingStatus.PartiallyRefunded, FinancialStatus.PartiallyRefunded, false) => TransitionOutcome.NoChange,
+            (ProcessingStatus.Success, FinancialStatus.Posted, false) =>
+                Apply(context, ProcessingStatus.PartiallyRefunded, FinancialStatus.PartiallyRefunded, LedgerAction.None),
+            (ProcessingStatus.Success, FinancialStatus.Posted, true)
+                or (ProcessingStatus.PartiallyRefunded, FinancialStatus.PartiallyRefunded, true) =>
+                Apply(context, ProcessingStatus.Refunded, FinancialStatus.Refunded, LedgerAction.None),
+            _ => Invalid(nameof(ApplyRefundCompleted)),
+        };
+    }
+
+    /// <summary>
+    /// ADR-019: whether a VOID child transaction may be started for this (original) transaction. Same states as
+    /// <see cref="AuthorizeReversal"/>. Starting the void changes nothing on the original.
+    /// </summary>
+    public Result AuthorizeVoid() =>
+        AuthorizeReversal().IsSuccess
+            ? Result.Success()
+            : RansysError.Conflict(
+                ErrorCodes.VoidNotAllowed,
+                $"Transaction {Id} cannot be voided in processing={CanonicalCodes.ProcessingStatus.ToCode(ProcessingStatus)}"
+                + $" financial={CanonicalCodes.FinancialStatus.ToCode(FinancialStatus)}.");
+
+    /// <summary>
+    /// ADR-019 (fail closed): the VOID child <paramref name="voidTransactionId"/> was confirmed by the provider. VOID
+    /// financial semantics are not decided yet, so processing and financial state never change and no money moves;
+    /// reconciliation becomes EXCEPTION (<see cref="ReasonCodes.VoidConfirmedRequiresReview"/>) for manual handling.
+    /// Idempotent when reconciliation is already EXCEPTION.
+    /// </summary>
+    public Result<TransitionOutcome> RecordVoidConfirmed(TransactionId voidTransactionId, TransitionContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        if (voidTransactionId == Id)
+        {
+            return RansysError.Validation(ErrorCodes.OriginalTransactionSelfReference, "A transaction cannot void itself.", "voidTransactionId");
+        }
+
+        return RecordReconciliationException(
+            ReasonCodes.VoidConfirmedRequiresReview,
+            $"VOID child {voidTransactionId} confirmed; VOID financial semantics are pending (ADR-019)",
+            context);
+    }
 
     private Result<TransitionOutcome> Apply(
         TransitionContext context, ProcessingStatus processing, FinancialStatus? financial, LedgerAction ledgerAction)
@@ -639,20 +751,26 @@ public sealed class Transaction
     /// Contradicting provider result: reconciliation → EXCEPTION, processing and financial truth untouched,
     /// no ledger action (State Transition Matrix §53, §54, §56).
     /// </summary>
-    private Result<TransitionOutcome> RecordConflict(TransitionContext context)
+    private Result<TransitionOutcome> RecordConflict(TransitionContext context) =>
+        RecordReconciliationException(
+            ReasonCodes.ConflictingProviderResult,
+            $"{context.ReasonCode} contradicts processing={CanonicalCodes.ProcessingStatus.ToCode(ProcessingStatus)}"
+            + $" financial={CanonicalCodes.FinancialStatus.ToCode(FinancialStatus)}",
+            context);
+
+    /// <summary>Reconciliation → EXCEPTION only; idempotent when already EXCEPTION. Never touches processing/financial.</summary>
+    private Result<TransitionOutcome> RecordReconciliationException(string reasonCode, string description, TransitionContext context)
     {
         if (ReconciliationStatus == ReconciliationStatus.Exception)
         {
             return new TransitionOutcome(TransitionKind.ConflictRecorded, LedgerAction.None, []);
         }
 
-        var description = $"{context.ReasonCode} contradicts processing={CanonicalCodes.ProcessingStatus.ToCode(ProcessingStatus)}"
-            + $" financial={CanonicalCodes.FinancialStatus.ToCode(FinancialStatus)}";
         var conflict = new StateChange(
             StatusDimension.Reconciliation,
             CanonicalCodes.ReconciliationStatus.ToCode(ReconciliationStatus),
             CanonicalCodes.ReconciliationStatus.ToCode(ReconciliationStatus.Exception),
-            ReasonCodes.ConflictingProviderResult,
+            reasonCode,
             description.Length > TransitionContext.MaxReasonDescriptionLength
                 ? description[..TransitionContext.MaxReasonDescriptionLength]
                 : description,
@@ -744,6 +862,10 @@ public sealed class Transaction
                 ProcessingStatus.Success => FinancialStatus == FinancialStatus.Posted,
                 ProcessingStatus.Failed => FinancialStatus is FinancialStatus.None or FinancialStatus.Released,
                 ProcessingStatus.Reversed => FinancialStatus is FinancialStatus.Released or FinancialStatus.Reversed,
+
+                // ADR-023: refund summary states move both dimensions together.
+                ProcessingStatus.PartiallyRefunded => FinancialStatus == FinancialStatus.PartiallyRefunded,
+                ProcessingStatus.Refunded => FinancialStatus == FinancialStatus.Refunded,
                 _ => true,
             };
 

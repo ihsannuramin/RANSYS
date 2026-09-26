@@ -8,8 +8,9 @@ namespace Ransys.Domain.Attempts;
 /// <list type="bullet">
 /// <item><c>NOT_SENT</c> requires <c>RequestSent = false</c>.</item>
 /// <item><c>SENT</c> and <c>RESPONSE</c> require <c>RequestSent = true</c>.</item>
-/// <item><c>TIMEOUT</c> / <c>CONNECTION_ERROR</c> may carry either value; only an explicit
-/// "not sent" proves non-delivery (see <see cref="ProvesRequestNotSent"/>).</item>
+/// <item><c>TIMEOUT</c> / <c>CONNECTION_ERROR</c> / <c>PROTOCOL_ERROR</c> (ADR-018) may carry either value; only
+/// <c>NOT_SENT</c> or <c>CONNECTION_ERROR</c> with <c>RequestSent = false</c> proves non-delivery
+/// (see <see cref="ProvesRequestNotSent"/>).</item>
 /// </list>
 /// </summary>
 public sealed record AttemptOutcome

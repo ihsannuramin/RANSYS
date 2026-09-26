@@ -33,13 +33,17 @@ public sealed class TransitionTableTests
         (F.PartiallyRefunded, F.RefundPending), (F.PartiallyRefunded, F.Refunded),
     ];
 
-    /// <summary>ADR-012: the original never enters REVERSAL_PENDING; it becomes REVERSED when the reversal child is confirmed.</summary>
+    /// <summary>
+    /// ADR-012: the original never enters REVERSAL_PENDING; it becomes REVERSED when the reversal child is confirmed.
+    /// ADR-023: a completed refund child moves the original SUCCESS → PARTIALLY_REFUNDED / REFUNDED directly.
+    /// </summary>
     [Fact]
-    public void Processing_table_is_the_documented_matrix_amended_by_adr_012()
+    public void Processing_table_is_the_documented_matrix_amended_by_adr_012_and_adr_023()
     {
         var expected = DocumentedProcessingEdges
             .Where(e => e.Item1 != P.ReversalPending && e.Item2 != P.ReversalPending)
             .Concat([(P.Pending, P.Reversed), (P.InDoubt, P.Reversed), (P.Success, P.Reversed)])
+            .Concat([(P.Success, P.PartiallyRefunded), (P.Success, P.Refunded)])
             .ToHashSet();
 
         Assert.Equal(expected, TransactionTransitions.Processing.Edges.ToHashSet());
@@ -47,11 +51,12 @@ public sealed class TransitionTableTests
     }
 
     [Fact]
-    public void Financial_table_is_the_documented_matrix_amended_by_adr_012()
+    public void Financial_table_is_the_documented_matrix_amended_by_adr_012_and_adr_023()
     {
         var expected = DocumentedFinancialEdges
             .Where(e => e.Item1 != F.ReversalPending && e.Item2 != F.ReversalPending)
             .Append((F.Posted, F.Reversed))
+            .Concat([(F.Posted, F.PartiallyRefunded), (F.Posted, F.Refunded)])
             .ToHashSet();
 
         Assert.Equal(expected, TransactionTransitions.Financial.Edges.ToHashSet());

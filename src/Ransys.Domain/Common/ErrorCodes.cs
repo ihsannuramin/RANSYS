@@ -77,4 +77,10 @@ public static class ErrorCodes
     public const string ReversalNotAllowed = "REVERSAL_NOT_ALLOWED";
     public const string ReversalAlreadyActive = "REVERSAL_ALREADY_ACTIVE";
     public const string ReversalNotSupported = "REVERSAL_NOT_SUPPORTED";
+
+    /// <summary>ADR-023: the original is not in a refundable state.</summary>
+    public const string RefundNotAllowed = "REFUND_NOT_ALLOWED";
+
+    /// <summary>ADR-019: the original is not in a voidable state.</summary>
+    public const string VoidNotAllowed = "VOID_NOT_ALLOWED";
 }

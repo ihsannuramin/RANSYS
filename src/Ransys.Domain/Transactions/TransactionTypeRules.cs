@@ -16,7 +16,7 @@ public static class TransactionTypeRules
 
     /// <summary>Child actions that must reference their original transaction (State Transition Matrix §19, ERD v1.1 §51).</summary>
     public static bool RequiresOriginalTransaction(TransactionType type) =>
-        type is TransactionType.Refund or TransactionType.Reversal;
+        type is TransactionType.Refund or TransactionType.Reversal or TransactionType.Void; // VOID: ADR-019
 }
 
 /// <summary>
@@ -41,4 +41,7 @@ public static class ReasonCodes
 
     /// <summary>Attempt left without a recorded outcome (e.g. Core restart mid-call); ADR-005 recovery.</summary>
     public const string AttemptOutcomeUnknown = "ATTEMPT_OUTCOME_UNKNOWN";
+
+    /// <summary>ADR-019: a VOID child succeeded; VOID financial semantics are open, so the original needs manual review.</summary>
+    public const string VoidConfirmedRequiresReview = "VOID_CONFIRMED_REQUIRES_REVIEW";
 }

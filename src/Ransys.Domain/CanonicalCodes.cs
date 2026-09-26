@@ -88,14 +88,20 @@ public static class CanonicalCodes
         (Attempts.AttemptType.StatusCheck, "STATUS_CHECK"),
         (Attempts.AttemptType.Reversal, "REVERSAL"),
         (Attempts.AttemptType.Refund, "REFUND"),
-        (Attempts.AttemptType.Advice, "ADVICE"));
+        (Attempts.AttemptType.Advice, "ADVICE"),
+        (Attempts.AttemptType.Void, "VOID"),
+        (Attempts.AttemptType.Transfer, "TRANSFER"),
+        (Attempts.AttemptType.BalanceInquiry, "BALANCE_INQUIRY"));
 
     public static readonly CodeMap<TransportStatus> TransportStatus = new(
         (Attempts.TransportStatus.NotSent, "NOT_SENT"),
         (Attempts.TransportStatus.Sent, "SENT"),
         (Attempts.TransportStatus.Response, "RESPONSE"),
         (Attempts.TransportStatus.Timeout, "TIMEOUT"),
-        (Attempts.TransportStatus.ConnectionError, "CONNECTION_ERROR"));
+        (Attempts.TransportStatus.ConnectionError, "CONNECTION_ERROR"),
+
+        // ADR-018: added by migration 0007; not in the v1.1 reference DDL.
+        (Attempts.TransportStatus.ProtocolError, "PROTOCOL_ERROR"));
 
     /// <summary>State Transition Matrix §59 (<c>transaction_state_history.change_source</c>).</summary>
     public static readonly CodeMap<ChangeSource> ChangeSource = new(

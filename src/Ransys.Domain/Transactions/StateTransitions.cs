@@ -168,6 +168,8 @@ public static class TransactionTransitions
     /// <summary>
     /// State Transition Matrix §6 / §73 as amended by ADR-012: a reversal is a child transaction, so the original goes
     /// PENDING / IN_DOUBT / SUCCESS → REVERSED directly when the child is confirmed and never uses REVERSAL_PENDING.
+    /// ADR-023: a refund is a child transaction too, so the original goes SUCCESS → PARTIALLY_REFUNDED / REFUNDED directly
+    /// when a refund child completes (the REFUND_PENDING edges stay declared but are unused).
     /// </summary>
     public static readonly TransitionTable<ProcessingStatus> Processing = new(
         (ProcessingStatus.Received, ProcessingStatus.Validated),
@@ -187,13 +189,18 @@ public static class TransactionTransitions
         (ProcessingStatus.InDoubt, ProcessingStatus.Reversed),
         (ProcessingStatus.Success, ProcessingStatus.Reversed),
         (ProcessingStatus.Success, ProcessingStatus.RefundPending),
+        (ProcessingStatus.Success, ProcessingStatus.PartiallyRefunded),
+        (ProcessingStatus.Success, ProcessingStatus.Refunded),
         (ProcessingStatus.RefundPending, ProcessingStatus.PartiallyRefunded),
         (ProcessingStatus.RefundPending, ProcessingStatus.Refunded),
         (ProcessingStatus.RefundPending, ProcessingStatus.Success),
         (ProcessingStatus.PartiallyRefunded, ProcessingStatus.RefundPending),
         (ProcessingStatus.PartiallyRefunded, ProcessingStatus.Refunded));
 
-    /// <summary>State Transition Matrix §23 as amended by ADR-012 (POSTED → REVERSED directly; REVERSAL_PENDING unused).</summary>
+    /// <summary>
+    /// State Transition Matrix §23 as amended by ADR-012 (POSTED → REVERSED directly; REVERSAL_PENDING unused) and ADR-023
+    /// (POSTED → PARTIALLY_REFUNDED / REFUNDED directly; REFUND_PENDING unused).
+    /// </summary>
     public static readonly TransitionTable<FinancialStatus> Financial = new(
         (FinancialStatus.None, FinancialStatus.Reserved),
         (FinancialStatus.None, FinancialStatus.Adjusted),
@@ -201,6 +208,8 @@ public static class TransactionTransitions
         (FinancialStatus.Reserved, FinancialStatus.Released),
         (FinancialStatus.Posted, FinancialStatus.Reversed),
         (FinancialStatus.Posted, FinancialStatus.RefundPending),
+        (FinancialStatus.Posted, FinancialStatus.PartiallyRefunded),
+        (FinancialStatus.Posted, FinancialStatus.Refunded),
         (FinancialStatus.RefundPending, FinancialStatus.PartiallyRefunded),
         (FinancialStatus.RefundPending, FinancialStatus.Refunded),
         (FinancialStatus.RefundPending, FinancialStatus.Posted),

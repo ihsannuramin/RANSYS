@@ -29,9 +29,19 @@ public sealed partial class CanonicalCodesTests
     public void Settlement_status_codes_match_ddl() =>
         Assert.Equal(DdlValues("ck_tx_settlement_status"), Sorted(CanonicalCodes.SettlementStatus.Codes));
 
+    /// <summary>
+    /// ADR-018: migration 0007 expands <c>ck_attempt_transport_status</c> with PROTOCOL_ERROR. The v1.1 reference DDL
+    /// (baseline 0001, kept byte-identical) predates it, so the codes are a superset with exactly that one extra value.
+    /// </summary>
     [Fact]
-    public void Transport_status_codes_match_ddl() =>
-        Assert.Equal(DdlValues("ck_attempt_transport_status"), Sorted(CanonicalCodes.TransportStatus.Codes));
+    public void Transport_status_codes_are_the_ddl_values_plus_protocol_error()
+    {
+        var ddl = DdlValues("ck_attempt_transport_status");
+        var codes = Sorted(CanonicalCodes.TransportStatus.Codes);
+
+        Assert.Subset(codes.ToHashSet(), ddl.ToHashSet());
+        Assert.Equal(["PROTOCOL_ERROR"], codes.Except(ddl));
+    }
 
     [Fact]
     public void Wallet_status_codes_match_ddl() =>
@@ -79,6 +89,10 @@ public sealed partial class CanonicalCodesTests
         Assert.Equal("TOPUP", CanonicalCodes.TransactionType.ToCode(TransactionType.TopUp));
         Assert.Equal("BALANCE_INQUIRY", CanonicalCodes.TransactionType.ToCode(TransactionType.BalanceInquiry));
         Assert.Equal("STATUS_CHECK", CanonicalCodes.AttemptType.ToCode(AttemptType.StatusCheck));
+        Assert.Equal("VOID", CanonicalCodes.AttemptType.ToCode(AttemptType.Void));
+        Assert.Equal("TRANSFER", CanonicalCodes.AttemptType.ToCode(AttemptType.Transfer));
+        Assert.Equal("BALANCE_INQUIRY", CanonicalCodes.AttemptType.ToCode(AttemptType.BalanceInquiry));
+        Assert.Equal("PROTOCOL_ERROR", CanonicalCodes.TransportStatus.ToCode(TransportStatus.ProtocolError));
     }
 
     [Fact]

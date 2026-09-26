@@ -134,6 +134,23 @@ public sealed class RoutingPolicyTests
         Assert.True(Select([Candidate(ProviderRefA, 1, capability)], type).IsSuccess);
     }
 
+    /// <summary>ADR-018: the capability codes are exactly the Provider Adapter Contract v1 catalog (§2).</summary>
+    [Fact]
+    public void Capability_codes_are_the_adapter_contract_catalog()
+    {
+        var doc = File.ReadAllText(Path.Combine(RepositoryPaths.Root(), "docs", "RANSYS_Provider_Adapter_Contract_v1.md"));
+        var section = doc[doc.IndexOf("## 2. Capability Catalog", StringComparison.Ordinal)..];
+        var block = section.Split("```")[1];
+        var documented = block.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(l => l != "text")
+            .ToHashSet();
+
+        Assert.Equal(13, documented.Count);
+        Assert.Equal(documented, ProviderCapabilities.All.ToHashSet());
+        Assert.All(ProviderCapabilities.All, c => Assert.Equal(c.ToUpperInvariant(), c));
+        Assert.DoesNotContain(ProviderCapabilities.All, c => c.StartsWith("supports_", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void Void_is_never_satisfied_by_reversal_or_refund_capabilities()
     {

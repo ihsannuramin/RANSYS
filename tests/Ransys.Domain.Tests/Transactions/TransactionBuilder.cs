@@ -101,6 +101,27 @@ internal static class TransactionBuilder
         return t;
     }
 
+    /// <summary>ADR-023: a partial refund child completed.</summary>
+    public static Transaction PartiallyRefunded(Transaction t)
+    {
+        Ok(Success(t).ApplyRefundCompleted(NewTransactionId(), fullyRefunded: false, Ctx("REFUND_COMPLETED")));
+        return t;
+    }
+
+    /// <summary>ADR-023: the refund children completed the full posted amount.</summary>
+    public static Transaction Refunded(Transaction t)
+    {
+        Ok(PartiallyRefunded(t).ApplyRefundCompleted(NewTransactionId(), fullyRefunded: true, Ctx("REFUND_COMPLETED")));
+        return t;
+    }
+
+    /// <summary>ADR-019: a VOID child was confirmed; the original only records a reconciliation exception.</summary>
+    public static Transaction VoidConfirmed(Transaction t)
+    {
+        Ok(Success(t).RecordVoidConfirmed(NewTransactionId(), Ctx("VOID_CONFIRMED")));
+        return t;
+    }
+
     /// <summary>A REVERSAL child transaction (ADR-012): non-reserving, own lifecycle.</summary>
     public static Transaction NewReversalChild() => New(TransactionType.Reversal, Rp(100_000m), NewTransactionId());
 
@@ -117,6 +138,9 @@ internal static class TransactionBuilder
         yield return ("payment:FAILED", () => Failed(NewPayment()));
         yield return ("payment:REVERSED+RELEASED", () => ReversedReleased(NewPayment()));
         yield return ("payment:REVERSED+REVERSED", () => ReversedCompensated(NewPayment()));
+        yield return ("payment:PARTIALLY_REFUNDED", () => PartiallyRefunded(NewPayment()));
+        yield return ("payment:REFUNDED", () => Refunded(NewPayment()));
+        yield return ("payment:SUCCESS+RECON_EXCEPTION", () => VoidConfirmed(NewPayment()));
         yield return ("inquiry:RECEIVED", () => NewInquiry());
         yield return ("inquiry:VALIDATED", () => Validated(NewInquiry()));
         yield return ("inquiry:PROCESSING", () => Processing(NewInquiry()));

@@ -25,6 +25,9 @@ public sealed class ExhaustiveTransitionTests
         ("CompleteSuccess", t => t.CompleteSuccess(Ctx())),
         ("CompleteFailure", t => t.CompleteFailure(Ctx())),
         ("ApplyReversalConfirmed", t => t.ApplyReversalConfirmed(new TransactionId(Guid.CreateVersion7()), Ctx("REVERSAL_CONFIRMED"))),
+        ("ApplyRefundCompleted(partial)", t => t.ApplyRefundCompleted(new TransactionId(Guid.CreateVersion7()), false, Ctx("REFUND_COMPLETED"))),
+        ("ApplyRefundCompleted(full)", t => t.ApplyRefundCompleted(new TransactionId(Guid.CreateVersion7()), true, Ctx("REFUND_COMPLETED"))),
+        ("RecordVoidConfirmed", t => t.RecordVoidConfirmed(new TransactionId(Guid.CreateVersion7()), Ctx("VOID_CONFIRMED"))),
     ];
 
     public static TheoryData<string, string> Cases()
@@ -81,7 +84,8 @@ public sealed class ExhaustiveTransitionTests
     [MemberData(nameof(Cases))]
     public void Terminal_states_never_change_processing_or_financial_truth(string state, string method)
     {
-        if (!state.Contains(":FAILED", StringComparison.Ordinal) && !state.Contains(":REVERSED", StringComparison.Ordinal))
+        if (!state.Contains(":FAILED", StringComparison.Ordinal) && !state.Contains(":REVERSED", StringComparison.Ordinal)
+            && !state.Contains(":REFUNDED", StringComparison.Ordinal))
         {
             return;
         }

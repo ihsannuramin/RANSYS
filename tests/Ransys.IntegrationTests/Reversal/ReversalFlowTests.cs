@@ -105,7 +105,7 @@ public sealed class ReversalFlowTests(PostgresDatabaseFixture db)
     [Fact]
     public async Task Provider_without_reversal_capability_cannot_be_asked_to_reverse()
     {
-        var (original, _) = await _h.ProcessingPayment(provider: _h.ProviderB); // BANK_B has no supports_reversal
+        var (original, _) = await _h.ProcessingPayment(provider: _h.ProviderB); // BANK_B has no REVERSAL capability
         Ok(await _h.Finalization.ApplyAsync(new ProviderResultCommand(original, AttemptResolutionKind.InDoubt, ChangeSource.SyncProviderResponse, "PROVIDER_READ_TIMEOUT")));
 
         var result = await StartRaw(original, $"REV-{Guid.NewGuid():N}");

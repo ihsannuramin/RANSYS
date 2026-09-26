@@ -101,7 +101,7 @@ Cross-component concurrency (main.md §22) is covered by `tests/Ransys.Integrati
 
 ## Architecture decisions
 
-All decisions are recorded in [`docs/decisions/`](docs/decisions/) (ADR-001 … ADR-017).
+All decisions are recorded in [`docs/decisions/`](docs/decisions/) (ADR-001 … ADR-019, ADR-023).
 
 
 Decided and implemented:
@@ -109,7 +109,10 @@ Decided and implemented:
 - ADR-012: reversal as a child transaction (`ReversalService`, migration `0006`); the original is never overwritten while the reversal runs and becomes REVERSED when the child is confirmed (ADR-003 superseded).
 - ADR-014: `FeeComponent.RefundPolicy` (migration `0005`) and `RefundFeeCalculator` (FULL on completion, PRO_RATA cumulative truncated). The refund use case that calls it (and passes the result to `PostRefundAsync`) is not built yet.
 - ADR-016: wallet status semantics and `WalletStatusService` freeze/unfreeze/close (maker-checker requirement for status changes not specified; approval reference carried when supplied).
-- ADR-017: `supports_transfer` / `supports_void` official; VOID never mapped to reversal/refund.
+- ADR-017: TRANSFER / VOID capabilities official; VOID never mapped to reversal/refund.
+- ADR-018: capability codes are the Provider Adapter Contract v1 catalog (`PAYMENT`, `BALANCE_CHECK`, `VOID`, …); migration `0007` renames the old `supports_*` rows and adds transport status `PROTOCOL_ERROR` (never proves not-sent).
+- ADR-019 (interim): VOID is a child transaction; `Transaction.RecordVoidConfirmed` only sets the original's reconciliation to EXCEPTION (`VOID_CONFIRMED_REQUIRES_REVIEW`). VOID financial semantics are still open.
+- ADR-023 (proposed, domain implemented): a refund child completes the original directly (`AuthorizeRefund`, `ApplyRefundCompleted`: SUCCESS → PARTIALLY_REFUNDED / REFUNDED, no REFUND_PENDING). The refund use case is not built yet.
 
 Decided, no Phase 1 code change needed:
 
@@ -118,7 +121,7 @@ Decided, no Phase 1 code change needed:
 Still open:
 
 - Mapping fee components' accounting amounts to provider cost / tax / margin accounts on payment success (Ledger Matrix §13); baseline split implemented, explicit split supported.
-- Original-side refund summary transitions (PS-11..PS-13) wait for the refund use case.
+- Refund use case (application service calling `AuthorizeRefund` / `PostRefundAsync` / `ApplyRefundCompleted`) and VOID financial semantics (ADR-019).
 - Minimum age before recovering an outcome-less attempt must exceed the longest provider timeout; the recovery worker schedule is not yet configured (service implemented, no hosted loop).
 - Outbox consumers: Backoffice projection with inbox/dedup + `source_version`, optional RabbitMQ publisher, DEAD-event alerting and retention of published rows.
 - Circuit breaker (state transitions, half-open probe limits) and provider health measurement are not implemented; routing only reads their state.
