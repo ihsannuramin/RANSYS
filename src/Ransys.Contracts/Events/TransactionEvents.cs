@@ -20,6 +20,9 @@ public static class TransactionEventTypes
 
     /// <summary>Sequence Pack §23: a REFUND child transaction was created for the original.</summary>
     public const string RefundRequested = "REFUND_REQUESTED";
+
+    /// <summary>ADR-019: a VOID child transaction was created for the original.</summary>
+    public const string VoidRequested = "VOID_REQUESTED";
 }
 
 /// <summary>

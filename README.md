@@ -77,6 +77,7 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 | 9 Routing foundation | Done |
 | 10 Concurrency scenarios | Done |
 | 12c Core provider gateway + callback sink (`TransactionCore/Providers`) | Done |
+| 12d Transaction processing orchestration (`TransactionCore/Processing`) | Done (API endpoints: 12e) |
 
 ## Phase 1 Definition of Done (main.md §28)
 
@@ -102,18 +103,19 @@ Cross-component concurrency (main.md §22) is covered by `tests/Ransys.Integrati
 
 ## Architecture decisions
 
-All decisions are recorded in [`docs/decisions/`](docs/decisions/) (ADR-001 … ADR-019, ADR-023, ADR-024).
+All decisions are recorded in [`docs/decisions/`](docs/decisions/) (ADR-001 … ADR-020, ADR-023, ADR-024).
 
 
 Decided and implemented:
 
 - ADR-012: reversal as a child transaction (`ReversalService`, migration `0006`); the original is never overwritten while the reversal runs and becomes REVERSED when the child is confirmed (ADR-003 superseded).
-- ADR-014: `FeeComponent.RefundPolicy` (migration `0005`) and `RefundFeeCalculator` (FULL on completion, PRO_RATA cumulative truncated). The refund use case that calls it (and passes the result to `PostRefundAsync`) is not built yet.
+- ADR-014: `FeeComponent.RefundPolicy` (migration `0005`) and `RefundFeeCalculator` (FULL on completion, PRO_RATA cumulative truncated). Refund finalization (M12c) calls it and passes the result to `PostRefundAsync`.
 - ADR-016: wallet status semantics and `WalletStatusService` freeze/unfreeze/close (maker-checker requirement for status changes not specified; approval reference carried when supplied).
 - ADR-017: TRANSFER / VOID capabilities official; VOID never mapped to reversal/refund.
 - ADR-018: capability codes are the Provider Adapter Contract v1 catalog (`PAYMENT`, `BALANCE_CHECK`, `VOID`, …); migration `0007` renames the old `supports_*` rows and adds transport status `PROTOCOL_ERROR` (never proves not-sent).
 - ADR-019 (interim): VOID is a child transaction; `Transaction.RecordVoidConfirmed` only sets the original's reconciliation to EXCEPTION (`VOID_CONFIRMED_REQUIRES_REVIEW`). VOID financial semantics are still open.
 - ADR-023 (proposed): a refund child completes the original directly (`AuthorizeRefund`, `ApplyRefundCompleted`: SUCCESS → PARTIALLY_REFUNDED / REFUNDED, no REFUND_PENDING). `TransactionFinalizationService` posts the refund (fee via `RefundFeeCalculator`, cumulative over earlier successful refund children) and completes the original in the same DB transaction.
+- ADR-020 (interim): minimal fee resolver (`FeeResolver`): active FEE version, FIXED or PERCENTAGE (decimal rate) × amount, clamp min/max, half away from zero to scale, merchant-specific rule wins, ambiguous ⇒ fail closed, no rule/version ⇒ zero fee, refund policy NONE.
 - ADR-024 (proposed): `RefundAuthorization` distinguishes a manual refund (maker-checker `ApprovedRequest`) from a merchant API refund bound to its own REFUND child (`MerchantApiRequest`, no approval id).
 
 Decided, no Phase 1 code change needed:
@@ -123,7 +125,9 @@ Decided, no Phase 1 code change needed:
 Still open:
 
 - Mapping fee components' accounting amounts to provider cost / tax / margin accounts on payment success (Ledger Matrix §13); baseline split implemented, explicit split supported.
-- Refund use case (application service calling `AuthorizeRefund` / `PostRefundAsync` / `ApplyRefundCompleted`) and VOID financial semantics (ADR-019).
+- VOID financial semantics (ADR-019).
+- Response Code Catalog v1: processing uses only 0000/1001/1002/2001/2003/3001/4001/5001; a frozen wallet and unmapped failures fall back to 1001, non-final states to 1002 (`RansysResponseCodes`).
+- Per-provider call policy (timeouts) and product default currency for inquiries (`ProviderCallPolicy`, `TransactionProcessingOptions`) until Configuration Schema v1.
 - Minimum age before recovering an outcome-less attempt must exceed the longest provider timeout; the recovery worker schedule is not yet configured (service implemented, no hosted loop).
 - Outbox consumers: Backoffice projection with inbox/dedup + `source_version`, optional RabbitMQ publisher, DEAD-event alerting and retention of published rows.
 - Circuit breaker (state transitions, half-open probe limits) and provider health measurement are not implemented; routing only reads their state.
