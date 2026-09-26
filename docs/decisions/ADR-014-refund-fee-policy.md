@@ -18,4 +18,8 @@ ADR-010 left the fee-refund policy open. A refund must decide how much of the or
 ## Consequences
 - Expand migration: `transaction_fee_components.refund_policy varchar(16) NOT NULL DEFAULT 'NONE'` with a CHECK constraint. The existing boolean `refundable` is kept for compatibility (`refundable = refund_policy <> 'NONE'`).
 - The domain `FeeComponent` carries a `RefundPolicy`; a refund-fee calculator computes the fee part of each refund from the original components and the refunds already posted.
-- Open details to confirm before implementation: behavior of `FULL` on partial refunds, and the rounding rule for `PRO_RATA`.
+
+## Detailed rules (product owner decision, 2026-09-27)
+- **`FULL`:** the whole charged amount of the component is refunded with the refund that brings the cumulative refunded principal up to the original principal. Earlier partial refunds return nothing for that component.
+- **`PRO_RATA`:** cumulative and truncated. Cumulative fee refund = `truncate(charged × cumulative refunded principal ÷ original principal)` to the currency scale; the fee part of this refund = cumulative fee refund − fee already refunded for that component. This never over-refunds, and the total equals the charged amount exactly when the principal is fully refunded.
+- **`NONE`:** nothing is ever refunded for the component.
