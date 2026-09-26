@@ -1,5 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
+  <PropertyGroup>
+    <!-- Local secrets (ConnectionStrings:TransactionDb) live outside the repository; loaded in Development. -->
+    <UserSecretsId>ransys-api-dev</UserSecretsId>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="../Ransys.TransactionCore/Ransys.TransactionCore.csproj" />
     <ProjectReference Include="../Ransys.Persistence.PostgreSql/Ransys.Persistence.PostgreSql.csproj" />
