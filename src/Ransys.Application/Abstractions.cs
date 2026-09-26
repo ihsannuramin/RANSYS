@@ -4,8 +4,12 @@ namespace Ransys.Application;
 /// One open atomic unit of database work (connection + explicit transaction). Everything written through the
 /// same session commits or rolls back together (ERD v1.1 §43). Concrete type lives in the persistence layer.
 /// </summary>
-public interface IDatabaseSession
+public interface IDatabaseSession : IAsyncDisposable
 {
+    Task CommitAsync(CancellationToken cancellationToken = default);
+
+    Task RollbackAsync(CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Savepoints let one step fail (e.g. losing a unique-index race) without aborting the whole transaction.
     /// </summary>
@@ -14,6 +18,12 @@ public interface IDatabaseSession
     Task RollbackToSavepointAsync(string name, CancellationToken cancellationToken = default);
 
     Task ReleaseSavepointAsync(string name, CancellationToken cancellationToken = default);
+}
+
+/// <summary>Opens a new <see cref="IDatabaseSession"/>. Disposing a session without commit rolls it back.</summary>
+public interface IDatabaseSessionFactory
+{
+    Task<IDatabaseSession> BeginAsync(CancellationToken cancellationToken = default);
 }
 
 /// <summary>Source of the current time; injectable for deterministic tests.</summary>

@@ -38,7 +38,10 @@ dotnet user-secrets set "ConnectionStrings:TransactionDb" "<connection string>" 
 dotnet run --project src/Ransys.Workers
 ```
 
-Other environments supply it through the environment variable `ConnectionStrings__TransactionDb`. The host does not run migrations. It currently runs the idempotency expiry sweep (`Ransys:IdempotencyExpiry:Interval`, `Ransys:IdempotencyExpiry:BatchSize`).
+Other environments supply it through the environment variable `ConnectionStrings__TransactionDb`. The host does not run migrations. It runs:
+
+- the transactional outbox worker (`Ransys:Outbox:*`: `BatchSize`, `LeaseDuration`, `PublishTimeout`, `MaxAttempts`, `BaseRetryDelay`, `MaxRetryDelay`, `PollInterval`). The Phase 1 publisher only logs event identities (placeholder until a Backoffice consumer exists). Several instances can run in parallel.
+- the idempotency expiry sweep (`Ransys:IdempotencyExpiry:Interval`, `Ransys:IdempotencyExpiry:BatchSize`).
 
 ## Solution layout
 
@@ -70,7 +73,7 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 | 5 Ledger posting service | Done |
 | 6 Idempotency service | Done |
 | 7 Transaction attempts | Done |
-| 8 Transactional outbox | Pending |
+| 8 Transactional outbox | Done |
 | 9 Routing foundation | Pending |
 | 10 Concurrency scenarios | Pending |
 
@@ -85,4 +88,5 @@ Accepted ADRs are listed in [`docs/decisions/`](docs/decisions/). Items still op
 - Original provider result arriving while a reversal of an unposted transaction is pending (ADR-012, interim: rejected without mutation).
 - Original-side refund summary transitions (PS-11..PS-13) wait for the refund use case.
 - Minimum age before recovering an outcome-less attempt must exceed the longest provider timeout; the recovery worker schedule is not yet configured (service implemented, no hosted loop).
+- Outbox consumers: Backoffice projection with inbox/dedup + `source_version`, optional RabbitMQ publisher, DEAD-event alerting and retention of published rows.
 - Items deferred to later design documents: OpenAPI v1, SIGNED_API contract, Provider Adapter Contract v1, response code catalog, configuration schema, SOAP/ISO8583 profiles.

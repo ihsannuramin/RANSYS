@@ -50,6 +50,12 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 - DB representation: a started row is `request_sent=true, transport_status='SENT', outcome_recorded_at NULL` (migration `0004`). Only `outcome_recorded_at IS NOT NULL` means an outcome exists. Never downgrade `request_sent` except through a recorded adapter outcome.
 - Map results with `AttemptResolution.Classify`. `AttemptRecoveryService` turns outcome-less attempts into IN_DOUBT (never failover or release).
 
+## Transactional outbox
+
+- Producers write events only through `IOutboxWriter.EnqueueAsync` inside the same `IDatabaseSession` as the change they describe. The Ledger Posting Service already does this for every posting.
+- Delivery is `OutboxProcessor` (`src/Ransys.Application/Outbox`) hosted by `OutboxWorker`, using a lease pattern on the DDL columns. It claims with `FOR UPDATE SKIP LOCKED` → `PROCESSING` + `locked_by` → commit, **publishes outside any DB transaction**, then completes each event in its own transaction as `PUBLISHED`, `PENDING` + exponential `next_retry_at`, or `DEAD`, plus one `outbox_delivery_attempts` row. Completion is guarded by `locked_by`, so a worker whose lease expired cannot overwrite the new owner. Publisher exceptions and timeouts count as failed deliveries.
+- Delivery is at least once. Consumers must dedup by `event_id` and order by `source_version`. `IDatabaseSession` now includes Commit/Rollback/Dispose; open sessions via `IDatabaseSessionFactory` (`PostgresSessionFactory`).
+
 ## Idempotency
 
 - New transactions are created only through `IdempotencyService.ClaimAsync(session, channel, identity, createTransaction)` (`src/Ransys.TransactionCore/Idempotency`). It returns `New` (your callback inserted the row), `ExistingTransaction` (return that transaction; discard the aggregate you built), or `DUPLICATE_REFERENCE_CONFLICT`. The callback runs under a savepoint, because losing the `ux_idempotency_active_reference` race aborts the PG transaction. Don't catch unique violations elsewhere to replicate this.
