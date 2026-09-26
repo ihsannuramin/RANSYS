@@ -16,6 +16,9 @@ public interface IRoutingStore
     /// </summary>
     Task<Result<IReadOnlyList<ProviderRouteCandidate>>> GetCandidatesAsync(
         IDatabaseSession session, Guid configVersionId, ProductId productId, TransactionType transactionType, CancellationToken cancellationToken = default);
+
+    /// <summary>True if the provider has <paramref name="capability"/> enabled (Architecture Spec §17).</summary>
+    Task<bool> ProviderHasCapabilityAsync(IDatabaseSession session, ProviderId providerId, string capability, CancellationToken cancellationToken = default);
 }
 
 /// <summary>

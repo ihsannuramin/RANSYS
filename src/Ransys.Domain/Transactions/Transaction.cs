@@ -393,13 +393,13 @@ public sealed class Transaction
     }
 
     /// <summary>
-    /// Decides whether a new provider attempt may be created (ADR-005, State Transition Matrix §15, §64–66):
+    /// Decides whether a new provider attempt may be created (ADR-005, ADR-012, State Transition Matrix §15, §64–66):
     /// <list type="bullet">
     /// <item>attempts always target the current routed provider (other providers only via <see cref="RecordFailover"/>);</item>
-    /// <item>a new financial request (PAYMENT/REFUND) is allowed only while PROCESSING and only if every earlier
-    /// financial request provably never left RANSYS; there is no hidden retry after a possible send;</item>
-    /// <item>STATUS_CHECK is allowed while the outcome is open (PROCESSING/PENDING/IN_DOUBT/REVERSAL_PENDING);</item>
-    /// <item>REVERSAL is allowed only while REVERSAL_PENDING.</item>
+    /// <item>the primary request (PAYMENT, REFUND, REVERSAL) is allowed only while PROCESSING and only if every earlier
+    /// primary request provably never left RANSYS; there is no hidden retry after a possible send;</item>
+    /// <item>REVERSAL attempts belong to a REVERSAL child transaction (ADR-012), never to the original;</item>
+    /// <item>STATUS_CHECK/ADVICE are allowed while the outcome is open (PROCESSING/PENDING/IN_DOUBT).</item>
     /// </list>
     /// </summary>
     public Result AuthorizeAttempt(AttemptType attemptType, ProviderReference provider, IReadOnlyCollection<TransactionAttempt> priorAttempts)
@@ -424,19 +424,24 @@ public sealed class Transaction
 
         switch (attemptType)
         {
-            case AttemptType.Payment or AttemptType.Refund:
+            case AttemptType.Payment or AttemptType.Refund or AttemptType.Reversal:
+                if (attemptType == AttemptType.Reversal && Type != TransactionType.Reversal)
+                {
+                    return AttemptNotAllowed(attemptType, "a reversal request is sent by a REVERSAL child transaction (ADR-012)");
+                }
+
                 if (ProcessingStatus != ProcessingStatus.Processing)
                 {
-                    return AttemptNotAllowed(attemptType, "a financial request can only be sent while PROCESSING");
+                    return AttemptNotAllowed(attemptType, "a primary request can only be sent while PROCESSING");
                 }
 
                 var possiblySent = priorAttempts.FirstOrDefault(a =>
-                    a.AttemptType is AttemptType.Payment or AttemptType.Refund && a.MayHaveReachedProvider);
+                    a.AttemptType is AttemptType.Payment or AttemptType.Refund or AttemptType.Reversal && a.MayHaveReachedProvider);
                 return possiblySent is null
                     ? Result.Success()
                     : RansysError.Financial(
                         ErrorCodes.FailoverNotAllowed,
-                        $"Attempt {possiblySent.AttemptNumber} may have reached the provider; a new financial request is not allowed (IN_DOUBT handling applies).");
+                        $"Attempt {possiblySent.AttemptNumber} may have reached the provider; a new request is not allowed (IN_DOUBT handling applies).");
 
             case AttemptType.Inquiry:
                 return ProcessingStatus == ProcessingStatus.Processing
@@ -444,15 +449,9 @@ public sealed class Transaction
                     : AttemptNotAllowed(attemptType, "an inquiry can only be sent while PROCESSING");
 
             case AttemptType.StatusCheck or AttemptType.Advice:
-                return ProcessingStatus is ProcessingStatus.Processing or ProcessingStatus.Pending
-                    or ProcessingStatus.InDoubt or ProcessingStatus.ReversalPending
+                return ProcessingStatus is ProcessingStatus.Processing or ProcessingStatus.Pending or ProcessingStatus.InDoubt
                     ? Result.Success()
                     : AttemptNotAllowed(attemptType, "the transaction outcome is already final");
-
-            case AttemptType.Reversal:
-                return ProcessingStatus == ProcessingStatus.ReversalPending
-                    ? Result.Success()
-                    : AttemptNotAllowed(attemptType, "a reversal request needs REVERSAL_PENDING");
 
             default:
                 return AttemptNotAllowed(attemptType, "unknown attempt type");
@@ -478,7 +477,7 @@ public sealed class Transaction
     }
 
     /// <summary>
-    /// PS-08: PROCESSING / PENDING / REVERSAL_PENDING → IN_DOUBT when the final provider result cannot be proven.
+    /// PS-08: PROCESSING / PENDING → IN_DOUBT when the final provider result cannot be proven.
     /// Financial status is preserved: the reservation is never released automatically (OP-05).
     /// </summary>
     public Result<TransitionOutcome> MarkInDoubt(TransitionContext context)
@@ -488,15 +487,16 @@ public sealed class Transaction
         return ProcessingStatus switch
         {
             ProcessingStatus.InDoubt => TransitionOutcome.NoChange,
-            ProcessingStatus.Processing or ProcessingStatus.Pending or ProcessingStatus.ReversalPending =>
+            ProcessingStatus.Processing or ProcessingStatus.Pending =>
                 Apply(context, ProcessingStatus.InDoubt, financial: null, LedgerAction.None),
             _ => Invalid(nameof(MarkInDoubt)),
         };
     }
 
     /// <summary>
-    /// PS-05: definitive provider SUCCESS of the original request, from PROCESSING / PENDING / IN_DOUBT.
-    /// Reserving transactions move RESERVED → POSTED and require OP-03 (POST).
+    /// PS-05: definitive provider SUCCESS of this transaction's own request, from PROCESSING / PENDING / IN_DOUBT.
+    /// Reserving transactions move RESERVED → POSTED and require OP-03 (POST). A pending reversal child does not
+    /// block it (ADR-012).
     /// </summary>
     public Result<TransitionOutcome> CompleteSuccess(TransitionContext context)
     {
@@ -510,29 +510,19 @@ public sealed class Transaction
                     return Apply(context, ProcessingStatus.Success, financial: null, LedgerAction.None);
                 }
 
-                return FinancialStatus switch
-                {
-                    FinancialStatus.Reserved => Apply(context, ProcessingStatus.Success, FinancialStatus.Posted, LedgerAction.Post),
+                return FinancialStatus == FinancialStatus.Reserved
+                    ? Apply(context, ProcessingStatus.Success, FinancialStatus.Posted, LedgerAction.Post)
+                    : Invalid(nameof(CompleteSuccess));
 
-                    // IN_DOUBT reached from an ambiguous reversal of an already-posted payment: the original stays posted.
-                    FinancialStatus.ReversalPending => Apply(context, ProcessingStatus.Success, FinancialStatus.Posted, LedgerAction.None),
-                    _ => Invalid(nameof(CompleteSuccess)),
-                };
-
-            // Original success is already established (or later reversed/refunded consistently): duplicate/late report.
+            // Success already established, or later reversed/refunded consistently: duplicate/late report.
             case ProcessingStatus.Success or ProcessingStatus.RefundPending or ProcessingStatus.PartiallyRefunded
                 or ProcessingStatus.Refunded or ProcessingStatus.Reversed:
-                return TransitionOutcome.NoChange;
-
-            case ProcessingStatus.ReversalPending when FinancialStatus == FinancialStatus.ReversalPending:
                 return TransitionOutcome.NoChange;
 
             // §53: FAILED was assigned only on definitive proof; a later SUCCESS is a contradiction, never FAILED → SUCCESS.
             case ProcessingStatus.Failed:
                 return RecordConflict(context);
 
-            // TODO / Architecture Decision Required (ADR-012): original result arriving while a reversal of a
-            // not-yet-posted transaction is in flight. Rejected without mutation; recovery continues via the reversal result.
             default:
                 return Invalid(nameof(CompleteSuccess));
         }
@@ -555,9 +545,6 @@ public sealed class Transaction
                 {
                     FinancialStatus.None => Apply(context, ProcessingStatus.Failed, financial: null, LedgerAction.None),
                     FinancialStatus.Reserved => Apply(context, ProcessingStatus.Failed, FinancialStatus.Released, LedgerAction.Release),
-
-                    // The original payment was already posted before the reversal became ambiguous: a failure report contradicts it.
-                    FinancialStatus.ReversalPending => RecordConflict(context),
                     _ => Invalid(nameof(CompleteFailure)),
                 };
 
@@ -569,81 +556,56 @@ public sealed class Transaction
                 or ProcessingStatus.Refunded:
                 return RecordConflict(context);
 
-            case ProcessingStatus.ReversalPending when FinancialStatus == FinancialStatus.ReversalPending:
-                return RecordConflict(context);
-
-            // TODO / Architecture Decision Required (ADR-012): see CompleteSuccess.
             default:
                 return Invalid(nameof(CompleteFailure));
         }
     }
 
     /// <summary>
-    /// PS-09: PENDING / IN_DOUBT / SUCCESS → REVERSAL_PENDING.
-    /// Not yet posted: financial stays RESERVED (hold). Already posted: POSTED → REVERSAL_PENDING (FS-04),
-    /// with no balance movement until the reversal succeeds.
+    /// ADR-012: whether a REVERSAL child transaction may be started for this (original) transaction. Reversible are
+    /// reserving transactions that are PENDING / IN_DOUBT with an active reservation, or SUCCESS and POSTED
+    /// (State Transition Matrix PS-09). Starting the reversal changes nothing on the original.
     /// </summary>
-    public Result<TransitionOutcome> BeginReversal(TransitionContext context)
+    public Result AuthorizeReversal()
+    {
+        var reversible = RequiresReservation && (ProcessingStatus, FinancialStatus) is
+            (ProcessingStatus.Pending or ProcessingStatus.InDoubt, FinancialStatus.Reserved)
+            or (ProcessingStatus.Success, FinancialStatus.Posted);
+
+        return reversible
+            ? Result.Success()
+            : RansysError.Conflict(
+                ErrorCodes.ReversalNotAllowed,
+                $"Transaction {Id} cannot be reversed in processing={CanonicalCodes.ProcessingStatus.ToCode(ProcessingStatus)}"
+                + $" financial={CanonicalCodes.FinancialStatus.ToCode(FinancialStatus)}.");
+    }
+
+    /// <summary>
+    /// ADR-012: the REVERSAL child <paramref name="reversalTransactionId"/> was confirmed by the provider. The financial
+    /// effect follows this transaction's financial state at this moment (PS-10):
+    /// <list type="bullet">
+    /// <item>active reservation (PENDING / IN_DOUBT, RESERVED) → REVERSED + RELEASED via OP-08 (REVERSAL_RELEASE);</item>
+    /// <item>posted (SUCCESS, POSTED) → REVERSED + REVERSED via OP-09 compensating posting; the original journal is untouched;</item>
+    /// <item>already REVERSED, or FAILED (nothing was ever consumed) → no change, no money moves.</item>
+    /// </list>
+    /// </summary>
+    public Result<TransitionOutcome> ApplyReversalConfirmed(TransactionId reversalTransactionId, TransitionContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        if (ProcessingStatus == ProcessingStatus.ReversalPending)
+        if (reversalTransactionId == Id)
         {
-            return TransitionOutcome.NoChange;
+            return RansysError.Validation(ErrorCodes.OriginalTransactionSelfReference, "A transaction cannot reverse itself.", "reversalTransactionId");
         }
 
         return (ProcessingStatus, FinancialStatus) switch
         {
-            (ProcessingStatus.Pending or ProcessingStatus.InDoubt, FinancialStatus.Reserved) =>
-                Apply(context, ProcessingStatus.ReversalPending, financial: null, LedgerAction.None),
-            (ProcessingStatus.InDoubt, FinancialStatus.ReversalPending) =>
-                Apply(context, ProcessingStatus.ReversalPending, financial: null, LedgerAction.None),
-            (ProcessingStatus.Success, FinancialStatus.Posted) =>
-                Apply(context, ProcessingStatus.ReversalPending, FinancialStatus.ReversalPending, LedgerAction.None),
-            _ => Invalid(nameof(BeginReversal)),
-        };
-    }
-
-    /// <summary>
-    /// PS-10: REVERSAL_PENDING → REVERSED. Active reservation: RESERVED → RELEASED via OP-08 (REVERSAL_RELEASE).
-    /// Posted payment: REVERSAL_PENDING → REVERSED via OP-09 compensating posting; the original journal is untouched.
-    /// </summary>
-    public Result<TransitionOutcome> CompleteReversal(TransitionContext context)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-
-        return (ProcessingStatus, FinancialStatus) switch
-        {
-            (ProcessingStatus.Reversed, _) => TransitionOutcome.NoChange,
-            (ProcessingStatus.ReversalPending, FinancialStatus.Reserved) =>
+            (ProcessingStatus.Reversed, _) or (ProcessingStatus.Failed, _) => TransitionOutcome.NoChange,
+            (ProcessingStatus.Pending or ProcessingStatus.InDoubt, FinancialStatus.Reserved) when RequiresReservation =>
                 Apply(context, ProcessingStatus.Reversed, FinancialStatus.Released, LedgerAction.ReversalRelease),
-            (ProcessingStatus.ReversalPending, FinancialStatus.ReversalPending) =>
+            (ProcessingStatus.Success, FinancialStatus.Posted) when RequiresReservation =>
                 Apply(context, ProcessingStatus.Reversed, FinancialStatus.Reversed, LedgerAction.CompensatingReversal),
-            _ => Invalid(nameof(CompleteReversal)),
-        };
-    }
-
-    /// <summary>
-    /// State Transition Matrix §18 / ADR-003: definitive reversal decline. A decline never makes the original FAILED.
-    /// Posted original: back to SUCCESS + POSTED. Unposted original (truth still unknown): back to IN_DOUBT, hold kept.
-    /// </summary>
-    public Result<TransitionOutcome> DeclineReversal(TransitionContext context)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-
-        if (!string.Equals(context.ReasonCode, ReasonCodes.ReversalDeclined, StringComparison.Ordinal))
-        {
-            return RansysError.Validation(
-                ErrorCodes.ReasonCodeMismatch, $"Reversal decline requires reason code {ReasonCodes.ReversalDeclined}.", "reasonCode");
-        }
-
-        return (ProcessingStatus, FinancialStatus) switch
-        {
-            (ProcessingStatus.ReversalPending, FinancialStatus.ReversalPending) =>
-                Apply(context, ProcessingStatus.Success, FinancialStatus.Posted, LedgerAction.None),
-            (ProcessingStatus.ReversalPending, FinancialStatus.Reserved) =>
-                Apply(context, ProcessingStatus.InDoubt, financial: null, LedgerAction.None),
-            _ => Invalid(nameof(DeclineReversal)),
+            _ => Invalid(nameof(ApplyReversalConfirmed)),
         };
     }
 
@@ -778,8 +740,7 @@ public sealed class Transaction
                 ProcessingStatus.Received => FinancialStatus == FinancialStatus.None,
                 ProcessingStatus.Validated => FinancialStatus is FinancialStatus.None or FinancialStatus.Reserved,
                 ProcessingStatus.Processing or ProcessingStatus.Pending => FinancialStatus == FinancialStatus.Reserved,
-                ProcessingStatus.InDoubt or ProcessingStatus.ReversalPending =>
-                    FinancialStatus is FinancialStatus.Reserved or FinancialStatus.ReversalPending,
+                ProcessingStatus.InDoubt => FinancialStatus == FinancialStatus.Reserved,
                 ProcessingStatus.Success => FinancialStatus == FinancialStatus.Posted,
                 ProcessingStatus.Failed => FinancialStatus is FinancialStatus.None or FinancialStatus.Released,
                 ProcessingStatus.Reversed => FinancialStatus is FinancialStatus.Released or FinancialStatus.Reversed,

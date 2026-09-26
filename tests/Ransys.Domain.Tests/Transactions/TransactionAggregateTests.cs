@@ -170,29 +170,83 @@ public sealed class TransactionAggregateTests
     }
 
     [Fact]
-    public void Case11_in_doubt_reversal_releases_reservation()
+    public void Case11_confirmed_reversal_of_in_doubt_payment_releases_reservation()
     {
-        var t = ReversalPendingUnposted(NewPayment());
-        Assert.Equal(FinancialStatus.Reserved, t.FinancialStatus);
+        var t = InDoubt(NewPayment());
+        var reversal = NewTransactionId();
 
-        var outcome = t.CompleteReversal(Ctx("REVERSAL_CONFIRMED")).Value;
+        var outcome = t.ApplyReversalConfirmed(reversal, Ctx("REVERSAL_CONFIRMED")).Value;
 
         Assert.Equal(LedgerAction.ReversalRelease, outcome.LedgerAction);
         Assert.Equal((ProcessingStatus.Reversed, FinancialStatus.Released), (t.ProcessingStatus, t.FinancialStatus));
     }
 
     [Fact]
-    public void Case12_reversal_after_success_is_compensating()
+    public void Case12_confirmed_reversal_of_posted_payment_is_compensating()
     {
         var t = Success(NewPayment());
 
-        var begin = t.BeginReversal(Ctx("REVERSAL_REQUESTED")).Value;
-        Assert.Equal(LedgerAction.None, begin.LedgerAction); // FS-04: no balance movement on request
-        Assert.Equal(FinancialStatus.ReversalPending, t.FinancialStatus);
+        var outcome = t.ApplyReversalConfirmed(NewTransactionId(), Ctx("REVERSAL_CONFIRMED")).Value;
 
-        var complete = t.CompleteReversal(Ctx("REVERSAL_CONFIRMED")).Value;
-        Assert.Equal(LedgerAction.CompensatingReversal, complete.LedgerAction);
+        Assert.Equal(LedgerAction.CompensatingReversal, outcome.LedgerAction);
         Assert.Equal((ProcessingStatus.Reversed, FinancialStatus.Reversed), (t.ProcessingStatus, t.FinancialStatus));
+    }
+
+    [Fact]
+    public void Adr012_starting_a_reversal_does_not_touch_the_original()
+    {
+        foreach (var t in new[] { Pending(NewPayment()), InDoubt(NewPayment()), Success(NewPayment()) })
+        {
+            var before = (t.ProcessingStatus, t.FinancialStatus, t.RowVersion);
+            t.ClearPendingStateChanges();
+
+            Assert.True(t.AuthorizeReversal().IsSuccess);
+            Assert.Equal(before, (t.ProcessingStatus, t.FinancialStatus, t.RowVersion));
+            Assert.Empty(t.PendingStateChanges);
+        }
+    }
+
+    [Fact]
+    public void Adr012_only_pending_in_doubt_or_posted_payments_are_reversible()
+    {
+        Assert.Equal(ErrorCodes.ReversalNotAllowed, Processing(NewPayment()).AuthorizeReversal().Error.Code);
+        Assert.Equal(ErrorCodes.ReversalNotAllowed, Failed(NewPayment()).AuthorizeReversal().Error.Code);
+        Assert.Equal(ErrorCodes.ReversalNotAllowed, ReversedCompensated(NewPayment()).AuthorizeReversal().Error.Code);
+        Assert.Equal(ErrorCodes.ReversalNotAllowed, Success(NewInquiry()).AuthorizeReversal().Error.Code);
+    }
+
+    [Fact]
+    public void Adr012_original_result_while_reversal_pending_is_applied_then_reversal_compensates()
+    {
+        // The case ADR-012 used to reject: IN_DOUBT original, reversal child in flight, original SUCCESS arrives.
+        var t = InDoubt(NewPayment());
+        Assert.True(t.AuthorizeReversal().IsSuccess);
+
+        Assert.Equal(LedgerAction.Post, t.CompleteSuccess(Ctx("CALLBACK_SUCCESS", ChangeSource.Callback)).Value.LedgerAction);
+        Assert.Equal(LedgerAction.CompensatingReversal, t.ApplyReversalConfirmed(NewTransactionId(), Ctx("REVERSAL_CONFIRMED")).Value.LedgerAction);
+        Assert.Equal((ProcessingStatus.Reversed, FinancialStatus.Reversed), (t.ProcessingStatus, t.FinancialStatus));
+    }
+
+    [Fact]
+    public void Adr012_reversal_confirmed_after_original_failed_moves_no_money()
+    {
+        var t = Failed(NewPayment());
+
+        var outcome = t.ApplyReversalConfirmed(NewTransactionId(), Ctx("REVERSAL_CONFIRMED")).Value;
+
+        Assert.Equal((TransitionKind.NoChange, LedgerAction.None), (outcome.Kind, outcome.LedgerAction));
+        Assert.Equal((ProcessingStatus.Failed, FinancialStatus.Released), (t.ProcessingStatus, t.FinancialStatus));
+    }
+
+    [Fact]
+    public void Adr012_reversal_child_has_its_own_non_reserving_lifecycle()
+    {
+        var child = Processing(NewReversalChild());
+
+        Assert.Equal(FinancialStatus.None, child.FinancialStatus);
+        Assert.Equal(LedgerAction.None, child.CompleteSuccess(Ctx("REVERSAL_CONFIRMED")).Value.LedgerAction);
+        Assert.Equal(ProcessingStatus.Success, child.ProcessingStatus);
+        Assert.NotNull(child.Identity.OriginalTransactionId);
     }
 
     [Fact]
@@ -249,45 +303,15 @@ public sealed class TransactionAggregateTests
     }
 
     [Fact]
-    public void Adr003_declined_reversal_of_posted_payment_returns_to_success()
+    public void Adr012_declined_reversal_child_fails_alone()
     {
-        var t = ReversalPendingPosted(NewPayment());
+        var original = Success(NewPayment());
+        var child = Processing(NewReversalChild());
 
-        var outcome = t.DeclineReversal(Ctx(ReasonCodes.ReversalDeclined)).Value;
+        child.CompleteFailure(Ctx(ReasonCodes.ReversalDeclined, ChangeSource.SyncProviderResponse));
 
-        Assert.Equal(LedgerAction.None, outcome.LedgerAction);
-        Assert.Equal((ProcessingStatus.Success, FinancialStatus.Posted), (t.ProcessingStatus, t.FinancialStatus));
-    }
-
-    [Fact]
-    public void Adr003_declined_reversal_of_unposted_payment_returns_to_in_doubt_never_failed()
-    {
-        var t = ReversalPendingUnposted(NewPayment());
-
-        t.DeclineReversal(Ctx(ReasonCodes.ReversalDeclined));
-
-        Assert.Equal((ProcessingStatus.InDoubt, FinancialStatus.Reserved), (t.ProcessingStatus, t.FinancialStatus));
-    }
-
-    [Fact]
-    public void Decline_reversal_requires_reversal_declined_reason()
-    {
-        var t = ReversalPendingPosted(NewPayment());
-
-        Assert.Equal(ErrorCodes.ReasonCodeMismatch, t.DeclineReversal(Ctx("PROVIDER_DECLINED")).Error.Code);
-        Assert.Equal(ProcessingStatus.ReversalPending, t.ProcessingStatus);
-    }
-
-    [Fact]
-    public void Ambiguous_reversal_of_posted_payment_keeps_posting_and_success_needs_no_second_post()
-    {
-        var t = InDoubtAfterPostedReversal(NewPayment());
-        Assert.Equal((ProcessingStatus.InDoubt, FinancialStatus.ReversalPending), (t.ProcessingStatus, t.FinancialStatus));
-
-        var outcome = t.CompleteSuccess(Ctx("STATUS_CHECK_SUCCESS", ChangeSource.StatusCheck)).Value;
-
-        Assert.Equal(LedgerAction.None, outcome.LedgerAction);
-        Assert.Equal((ProcessingStatus.Success, FinancialStatus.Posted), (t.ProcessingStatus, t.FinancialStatus));
+        Assert.Equal((ProcessingStatus.Failed, FinancialStatus.None), (child.ProcessingStatus, child.FinancialStatus));
+        Assert.Equal((ProcessingStatus.Success, FinancialStatus.Posted), (original.ProcessingStatus, original.FinancialStatus));
     }
 
     [Fact]

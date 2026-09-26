@@ -263,6 +263,22 @@ public sealed class TransactionStore : ITransactionRepository
         return transaction.IsSuccess ? transaction.Value : transaction.Error;
     }
 
+    public async Task<IReadOnlyList<(TransactionId Id, ProcessingStatus Status)>> FindChildrenAsync(
+        IDatabaseSession databaseSession, TransactionId originalId, TransactionType type, CancellationToken cancellationToken = default)
+    {
+        var session = PostgresSessionCast.From(databaseSession);
+        var rows = await session.Connection.QueryAsync<(Guid Id, string Status)>(new CommandDefinition(
+            """
+            SELECT ransys_transaction_id, processing_status
+            FROM core.transactions
+            WHERE original_transaction_id = @OriginalId AND transaction_type = @Type
+            ORDER BY received_at
+            """,
+            new { OriginalId = originalId.Value, Type = CanonicalCodes.TransactionType.ToCode(type) },
+            session.Transaction, cancellationToken: cancellationToken));
+        return rows.Select(r => (new TransactionId(r.Id), CanonicalCodes.ProcessingStatus.Parse(r.Status))).ToList();
+    }
+
     Task<Result<Transaction?>> ITransactionRepository.GetAsync(
         IDatabaseSession session, TransactionId id, bool forUpdate, CancellationToken cancellationToken) =>
         GetAsync(session, id, forUpdate ? RowLock.ForUpdate : RowLock.None, cancellationToken);

@@ -50,6 +50,11 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 
 - Every provider result for the original request goes through `TransactionFinalizationService.ApplyAsync` (`src/Ransys.TransactionCore/Finalization`), whatever the source: sync response, callback, status check, advice, reconciliation. It locks the transaction row, applies the aggregate transition, executes the requested ledger action (POST / RELEASE, hold reason for IN_DOUBT), updates with `row_version`, and enqueues a `TRANSACTION` status event, all in one session. Don't write parallel paths that call the ledger directly for provider results.
 
+## Reversal (ADR-012)
+
+- A reversal is a **child transaction** (type REVERSAL, own id, `original_transaction_id`, idempotency, attempts, history) started by `ReversalService.StartAsync`. Never change the original's state when starting a reversal; the original has no REVERSAL_PENDING any more.
+- Lock order is parent → child: `TransactionFinalizationService` locks the original before the child. On child SUCCESS, `Transaction.ApplyReversalConfirmed` makes the original REVERSED in the same DB transaction. The ledger effect follows the original's financial state at that moment (RESERVED → `REVERSAL_RELEASE`, POSTED → compensating `TX:<original>:REVERSAL:<child>`). A declined child fails alone.
+
 ## Transaction attempts (ADR-005)
 
 - Create attempts only via `TransactionAttemptService.StartAsync` while holding the transaction row lock, and **commit before calling the provider**. It runs `Transaction.AuthorizeAttempt`, so there are no new financial requests after a possible send and attempts only target the current routed provider. Record results with `RecordOutcomeAsync`, exactly once.

@@ -11,7 +11,7 @@ public sealed class MigrationTests(PostgresDatabaseFixture db)
     public void All_scripts_were_applied_on_a_fresh_database_in_order()
     {
         Assert.Equal(DatabaseMigrator.ScriptNames, db.ScriptsAppliedAtStartup);
-        Assert.Equal(5, DatabaseMigrator.ScriptNames.Count);
+        Assert.Equal(6, DatabaseMigrator.ScriptNames.Count);
     }
 
     [Fact]

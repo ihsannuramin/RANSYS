@@ -87,35 +87,22 @@ internal static class TransactionBuilder
         return t;
     }
 
-    public static Transaction ReversalPendingUnposted(Transaction t)
-    {
-        Ok(InDoubt(t).BeginReversal(Ctx("REVERSAL_REQUESTED")));
-        return t;
-    }
-
-    public static Transaction ReversalPendingPosted(Transaction t)
-    {
-        Ok(Success(t).BeginReversal(Ctx("REVERSAL_REQUESTED")));
-        return t;
-    }
-
-    public static Transaction InDoubtAfterPostedReversal(Transaction t)
-    {
-        Ok(ReversalPendingPosted(t).MarkInDoubt(Ctx("REVERSAL_READ_TIMEOUT")));
-        return t;
-    }
-
+    /// <summary>ADR-012: the reversal child was confirmed while the original still held its reservation.</summary>
     public static Transaction ReversedReleased(Transaction t)
     {
-        Ok(ReversalPendingUnposted(t).CompleteReversal(Ctx("REVERSAL_CONFIRMED")));
+        Ok(InDoubt(t).ApplyReversalConfirmed(NewTransactionId(), Ctx("REVERSAL_CONFIRMED")));
         return t;
     }
 
+    /// <summary>ADR-012: the reversal child was confirmed after the original was posted.</summary>
     public static Transaction ReversedCompensated(Transaction t)
     {
-        Ok(ReversalPendingPosted(t).CompleteReversal(Ctx("REVERSAL_CONFIRMED")));
+        Ok(Success(t).ApplyReversalConfirmed(NewTransactionId(), Ctx("REVERSAL_CONFIRMED")));
         return t;
     }
+
+    /// <summary>A REVERSAL child transaction (ADR-012): non-reserving, own lifecycle.</summary>
+    public static Transaction NewReversalChild() => New(TransactionType.Reversal, Rp(100_000m), NewTransactionId());
 
     /// <summary>Every reachable state, for payments (reserving) and inquiries (non-reserving).</summary>
     public static IEnumerable<(string Name, Func<Transaction> Build)> ReachableStates()
@@ -128,9 +115,6 @@ internal static class TransactionBuilder
         yield return ("payment:IN_DOUBT", () => InDoubt(NewPayment()));
         yield return ("payment:SUCCESS", () => Success(NewPayment()));
         yield return ("payment:FAILED", () => Failed(NewPayment()));
-        yield return ("payment:REVERSAL_PENDING+RESERVED", () => ReversalPendingUnposted(NewPayment()));
-        yield return ("payment:REVERSAL_PENDING+POSTED", () => ReversalPendingPosted(NewPayment()));
-        yield return ("payment:IN_DOUBT+REVERSAL_PENDING", () => InDoubtAfterPostedReversal(NewPayment()));
         yield return ("payment:REVERSED+RELEASED", () => ReversedReleased(NewPayment()));
         yield return ("payment:REVERSED+REVERSED", () => ReversedCompensated(NewPayment()));
         yield return ("inquiry:RECEIVED", () => NewInquiry());
@@ -138,6 +122,11 @@ internal static class TransactionBuilder
         yield return ("inquiry:PROCESSING", () => Processing(NewInquiry()));
         yield return ("inquiry:SUCCESS", () => Success(NewInquiry()));
         yield return ("inquiry:FAILED", () => Failed(NewInquiry()));
+        yield return ("reversal:RECEIVED", () => NewReversalChild());
+        yield return ("reversal:PROCESSING", () => Processing(NewReversalChild()));
+        yield return ("reversal:IN_DOUBT", () => InDoubt(NewReversalChild()));
+        yield return ("reversal:SUCCESS", () => Success(NewReversalChild()));
+        yield return ("reversal:FAILED", () => Failed(NewReversalChild()));
     }
 
     private static void Ok(Result<TransitionOutcome> result)

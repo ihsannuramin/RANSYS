@@ -12,6 +12,8 @@ public static class TransactionEventTypes
     public const string ResolvedSuccess = "TRANSACTION_RESOLVED_SUCCESS";
     public const string ResolvedFailed = "TRANSACTION_RESOLVED_FAILED";
     public const string ReconExceptionCreated = "RECON_EXCEPTION_CREATED";
+    public const string ReversalRequested = "REVERSAL_REQUESTED";
+    public const string Reversed = "TRANSACTION_REVERSED";
 }
 
 /// <summary>

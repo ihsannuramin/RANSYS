@@ -24,9 +24,7 @@ public sealed class ExhaustiveTransitionTests
         ("MarkInDoubt", t => t.MarkInDoubt(Ctx())),
         ("CompleteSuccess", t => t.CompleteSuccess(Ctx())),
         ("CompleteFailure", t => t.CompleteFailure(Ctx())),
-        ("BeginReversal", t => t.BeginReversal(Ctx())),
-        ("CompleteReversal", t => t.CompleteReversal(Ctx())),
-        ("DeclineReversal", t => t.DeclineReversal(Ctx(ReasonCodes.ReversalDeclined))),
+        ("ApplyReversalConfirmed", t => t.ApplyReversalConfirmed(new TransactionId(Guid.CreateVersion7()), Ctx("REVERSAL_CONFIRMED"))),
     ];
 
     public static TheoryData<string, string> Cases()
@@ -73,7 +71,7 @@ public sealed class ExhaustiveTransitionTests
             ("NONE", "RESERVED") => LedgerAction.Reserve,
             ("RESERVED", "POSTED") => LedgerAction.Post,
             ("RESERVED", "RELEASED") => t.ProcessingStatus == ProcessingStatus.Reversed ? LedgerAction.ReversalRelease : LedgerAction.Release,
-            ("REVERSAL_PENDING", "REVERSED") => LedgerAction.CompensatingReversal,
+            ("POSTED", "REVERSED") => LedgerAction.CompensatingReversal,
             _ => LedgerAction.None,
         };
         Assert.Equal(expectedLedger, outcome.LedgerAction);

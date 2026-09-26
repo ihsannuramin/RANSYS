@@ -81,6 +81,18 @@ public sealed class PostgresRoutingStore : IRoutingStore
         return candidates;
     }
 
+    public async Task<bool> ProviderHasCapabilityAsync(
+        IDatabaseSession session, ProviderId providerId, string capability, CancellationToken cancellationToken = default)
+    {
+        var s = PostgresSessionCast.From(session);
+        return await s.Connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+            """
+            SELECT EXISTS (SELECT 1 FROM integration.provider_capabilities
+                           WHERE provider_id = @ProviderId AND capability_code = @Capability AND enabled)
+            """,
+            new { ProviderId = providerId.Value, Capability = capability }, s.Transaction, cancellationToken: cancellationToken));
+    }
+
     private static RansysError Corrupt(Guid providerId) =>
         new(ErrorCodes.PersistedStateInvalid, ErrorCategory.Internal, $"Provider {providerId} routing data is inconsistent.");
 

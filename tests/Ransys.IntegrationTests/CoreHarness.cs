@@ -17,6 +17,10 @@ using Ransys.Persistence.PostgreSql.Transactions;
 using Ransys.Testing.PostgreSql;
 using Ransys.TransactionCore.Attempts;
 using Ransys.TransactionCore.Finalization;
+using Ransys.TransactionCore.Idempotency;
+using Ransys.TransactionCore.Reversal;
+using Ransys.Persistence.PostgreSql.Idempotency;
+using Ransys.Persistence.PostgreSql.Routing;
 
 namespace Ransys.IntegrationTests;
 
@@ -39,7 +43,12 @@ internal sealed class CoreHarness
         Recovery = new AttemptRecoveryService(Transactions, AttemptStore, Attempts, Ledger, clock);
         Finalization = new TransactionFinalizationService(
             new PostgresSessionFactory(db.DataSource), Transactions, Ledger, new PostgresOutboxWriter(), clock, ids);
+        Reversals = new ReversalService(
+            Transactions, new IdempotencyService(new PostgresIdempotencyStore(), clock, ids), new PostgresRoutingStore(),
+            new PostgresOutboxWriter(), clock, ids);
     }
+
+    public ReversalService Reversals { get; }
 
     public TransactionFinalizationService Finalization { get; }
 
@@ -65,9 +74,10 @@ internal sealed class CoreHarness
     public Task<PostgresSession> Session() => PostgresSession.BeginAsync(_db.DataSource);
 
     /// <summary>Payment of 100,000 + 2,500 fee, reserved on a funded wallet and PROCESSING on provider A (SD-01 up to the provider call).</summary>
-    public async Task<(TransactionId Transaction, WalletId Wallet)> ProcessingPayment(WalletId? sharedWallet = null)
+    public async Task<(TransactionId Transaction, WalletId Wallet)> ProcessingPayment(WalletId? sharedWallet = null, ProviderReference? provider = null)
     {
         var wallet = sharedWallet ?? await NewFundedWallet(1_000_000m);
+        var routedTo = provider ?? ProviderA;
         var transaction = NewPayment(100_000m);
         transaction.Validate(Fee2500(), TransactionConfigurationSnapshot.None, Ctx("VALIDATION_OK"));
 
@@ -75,10 +85,19 @@ internal sealed class CoreHarness
         Ok(await Transactions.InsertAsync(session, transaction));
         Ok(transaction.MarkReserved(Ctx("PAYMENT_PROCESSING")));
         Ok(await Ledger.ReserveAsync(session, new ReserveRequest(transaction.Id, wallet, transaction.Amount, transaction.Fees!.GuaranteedReserveFeeTotal, "PAYMENT_PROCESSING")));
-        Ok(transaction.BeginProcessing(RoutingDecision.Initial(ProviderA, 1, DateTimeOffset.UtcNow).Value, Ctx("PROVIDER_PROCESSING")));
+        Ok(transaction.BeginProcessing(RoutingDecision.Initial(routedTo, 1, DateTimeOffset.UtcNow).Value, Ctx("PROVIDER_PROCESSING")));
         Ok(await Transactions.UpdateAsync(session, transaction));
         await session.CommitAsync();
         return (transaction.Id, wallet);
+    }
+
+    /// <summary>Gives a provider a capability (idempotent).</summary>
+    public async Task GrantCapability(ProviderId provider, string capability)
+    {
+        await using var connection = await _db.DataSource.OpenConnectionAsync();
+        await connection.ExecuteAsync(
+            "INSERT INTO integration.provider_capabilities VALUES (@provider, @capability, true, '{}'::jsonb, now()) ON CONFLICT DO NOTHING",
+            new { provider = provider.Value, capability });
     }
 
     public async Task<Transaction> Load(TransactionId id)

@@ -52,7 +52,7 @@ public sealed class AuthorizeAttemptTests
     {
         Assert.True(InDoubt(NewPayment()).AuthorizeAttempt(AttemptType.StatusCheck, ProviderRefA, []).IsSuccess);
         Assert.True(Pending(NewPayment()).AuthorizeAttempt(AttemptType.StatusCheck, ProviderRefA, []).IsSuccess);
-        Assert.True(ReversalPendingUnposted(NewPayment()).AuthorizeAttempt(AttemptType.StatusCheck, ProviderRefA, []).IsSuccess);
+        Assert.True(InDoubt(NewReversalChild()).AuthorizeAttempt(AttemptType.StatusCheck, ProviderRefA, []).IsSuccess);
         Assert.Equal(ErrorCodes.AttemptNotAllowed, Success(NewPayment()).AuthorizeAttempt(AttemptType.StatusCheck, ProviderRefA, []).Error.Code);
         Assert.Equal(ErrorCodes.AttemptNotAllowed, Failed(NewPayment()).AuthorizeAttempt(AttemptType.StatusCheck, ProviderRefA, []).Error.Code);
     }
@@ -66,10 +66,18 @@ public sealed class AuthorizeAttemptTests
     }
 
     [Fact]
-    public void Reversal_attempt_needs_reversal_pending()
+    public void Reversal_request_is_sent_only_by_a_processing_reversal_child()
     {
-        Assert.True(ReversalPendingPosted(NewPayment()).AuthorizeAttempt(AttemptType.Reversal, ProviderRefA, []).IsSuccess);
+        // ADR-012: never by the original, whatever its state.
         Assert.Equal(ErrorCodes.AttemptNotAllowed, InDoubt(NewPayment()).AuthorizeAttempt(AttemptType.Reversal, ProviderRefA, []).Error.Code);
+        Assert.Equal(ErrorCodes.AttemptNotAllowed, Success(NewPayment()).AuthorizeAttempt(AttemptType.Reversal, ProviderRefA, []).Error.Code);
+
+        var child = Processing(NewReversalChild());
+        Assert.True(child.AuthorizeAttempt(AttemptType.Reversal, ProviderRefA, []).IsSuccess);
+
+        var first = Attempt(child, 1, AttemptType.Reversal, ProviderRefA);
+        first.RecordOutcome(AttemptOutcome.Create(true, TransportStatus.Timeout).Value);
+        Assert.Equal(ErrorCodes.FailoverNotAllowed, child.AuthorizeAttempt(AttemptType.Reversal, ProviderRefA, [first]).Error.Code);
     }
 
     [Fact]

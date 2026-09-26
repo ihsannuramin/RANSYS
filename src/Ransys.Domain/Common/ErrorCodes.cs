@@ -74,4 +74,7 @@ public static class ErrorCodes
     public const string ReserveAmountNotPositive = "RESERVE_AMOUNT_NOT_POSITIVE";
     public const string FailoverNotAllowed = "FAILOVER_NOT_ALLOWED";
     public const string ReasonCodeMismatch = "REASON_CODE_MISMATCH";
+    public const string ReversalNotAllowed = "REVERSAL_NOT_ALLOWED";
+    public const string ReversalAlreadyActive = "REVERSAL_ALREADY_ACTIVE";
+    public const string ReversalNotSupported = "REVERSAL_NOT_SUPPORTED";
 }

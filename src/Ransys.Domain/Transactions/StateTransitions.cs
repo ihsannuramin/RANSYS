@@ -165,7 +165,10 @@ public sealed record TransitionContext
 /// </summary>
 public static class TransactionTransitions
 {
-    /// <summary>State Transition Matrix §6 / §73, plus ADR-003 (REVERSAL_PENDING → SUCCESS).</summary>
+    /// <summary>
+    /// State Transition Matrix §6 / §73 as amended by ADR-012: a reversal is a child transaction, so the original goes
+    /// PENDING / IN_DOUBT / SUCCESS → REVERSED directly when the child is confirmed and never uses REVERSAL_PENDING.
+    /// </summary>
     public static readonly TransitionTable<ProcessingStatus> Processing = new(
         (ProcessingStatus.Received, ProcessingStatus.Validated),
         (ProcessingStatus.Received, ProcessingStatus.Failed),
@@ -178,14 +181,11 @@ public static class TransactionTransitions
         (ProcessingStatus.Pending, ProcessingStatus.Success),
         (ProcessingStatus.Pending, ProcessingStatus.Failed),
         (ProcessingStatus.Pending, ProcessingStatus.InDoubt),
-        (ProcessingStatus.Pending, ProcessingStatus.ReversalPending),
+        (ProcessingStatus.Pending, ProcessingStatus.Reversed),
         (ProcessingStatus.InDoubt, ProcessingStatus.Success),
         (ProcessingStatus.InDoubt, ProcessingStatus.Failed),
-        (ProcessingStatus.InDoubt, ProcessingStatus.ReversalPending),
-        (ProcessingStatus.ReversalPending, ProcessingStatus.Reversed),
-        (ProcessingStatus.ReversalPending, ProcessingStatus.InDoubt),
-        (ProcessingStatus.ReversalPending, ProcessingStatus.Success), // ADR-003, guarded
-        (ProcessingStatus.Success, ProcessingStatus.ReversalPending),
+        (ProcessingStatus.InDoubt, ProcessingStatus.Reversed),
+        (ProcessingStatus.Success, ProcessingStatus.Reversed),
         (ProcessingStatus.Success, ProcessingStatus.RefundPending),
         (ProcessingStatus.RefundPending, ProcessingStatus.PartiallyRefunded),
         (ProcessingStatus.RefundPending, ProcessingStatus.Refunded),
@@ -193,16 +193,14 @@ public static class TransactionTransitions
         (ProcessingStatus.PartiallyRefunded, ProcessingStatus.RefundPending),
         (ProcessingStatus.PartiallyRefunded, ProcessingStatus.Refunded));
 
-    /// <summary>State Transition Matrix §23.</summary>
+    /// <summary>State Transition Matrix §23 as amended by ADR-012 (POSTED → REVERSED directly; REVERSAL_PENDING unused).</summary>
     public static readonly TransitionTable<FinancialStatus> Financial = new(
         (FinancialStatus.None, FinancialStatus.Reserved),
         (FinancialStatus.None, FinancialStatus.Adjusted),
         (FinancialStatus.Reserved, FinancialStatus.Posted),
         (FinancialStatus.Reserved, FinancialStatus.Released),
-        (FinancialStatus.Posted, FinancialStatus.ReversalPending),
+        (FinancialStatus.Posted, FinancialStatus.Reversed),
         (FinancialStatus.Posted, FinancialStatus.RefundPending),
-        (FinancialStatus.ReversalPending, FinancialStatus.Reversed),
-        (FinancialStatus.ReversalPending, FinancialStatus.Posted),
         (FinancialStatus.RefundPending, FinancialStatus.PartiallyRefunded),
         (FinancialStatus.RefundPending, FinancialStatus.Refunded),
         (FinancialStatus.RefundPending, FinancialStatus.Posted),

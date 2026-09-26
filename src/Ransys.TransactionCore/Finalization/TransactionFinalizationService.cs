@@ -88,16 +88,38 @@ public sealed class TransactionFinalizationService
             return context.Error;
         }
 
+        // Lock order: a reversal child's original (parent) is locked before the child itself (ADR-012).
+        var peek = await _transactions.GetAsync(session, command.TransactionId, forUpdate: false, cancellationToken);
+        if (peek.IsFailure)
+        {
+            return peek.Error;
+        }
+
+        if (peek.Value is null)
+        {
+            return RansysError.Validation(ErrorCodes.InvalidStateTransition, $"Transaction {command.TransactionId} does not exist.");
+        }
+
+        Transaction? original = null;
+        if (peek.Value is { Type: TransactionType.Reversal, Identity.OriginalTransactionId: { } originalId })
+        {
+            var parent = await _transactions.GetAsync(session, originalId, forUpdate: true, cancellationToken);
+            if (parent.IsFailure)
+            {
+                return parent.Error;
+            }
+
+            original = parent.Value
+                ?? throw new InvalidOperationException($"Reversal {command.TransactionId} references missing original {originalId}.");
+        }
+
         var loaded = await _transactions.GetAsync(session, command.TransactionId, forUpdate: true, cancellationToken);
         if (loaded.IsFailure)
         {
             return loaded.Error;
         }
 
-        if (loaded.Value is not { } transaction)
-        {
-            return RansysError.Validation(ErrorCodes.InvalidStateTransition, $"Transaction {command.TransactionId} does not exist.");
-        }
+        var transaction = loaded.Value!;
 
         var previous = transaction.ProcessingStatus;
         var transition = command.Resolution switch
@@ -134,11 +156,59 @@ public sealed class TransactionFinalizationService
         }
 
         await EnqueueStatusEventAsync(session, transaction, previous, outcome, command.Source, cancellationToken);
+
+        if (original is not null && outcome.Kind == TransitionKind.Applied && transaction.ProcessingStatus == ProcessingStatus.Success)
+        {
+            var reversed = await ApplyReversalToOriginalAsync(session, original, transaction, command, context.Value, cancellationToken);
+            if (reversed.IsFailure)
+            {
+                return reversed.Error;
+            }
+        }
+
         return Snapshot(outcome, transaction);
     }
 
+    /// <summary>
+    /// ADR-012: the reversal child succeeded; the original becomes REVERSED and the ledger effect follows the original's
+    /// financial state now (release of an active reservation, or compensating reversal of a posted payment).
+    /// Same database transaction as the child's success.
+    /// </summary>
+    private async Task<Result> ApplyReversalToOriginalAsync(
+        IDatabaseSession session, Transaction original, Transaction reversal, ProviderResultCommand command, TransitionContext childContext, CancellationToken cancellationToken)
+    {
+        var context = TransitionContext.Create(
+            "REVERSAL_CONFIRMED", command.Source, childContext.OccurredAt, $"Reversal {reversal.Id} confirmed", command.AttemptId);
+        var previous = original.ProcessingStatus;
+        var outcome = original.ApplyReversalConfirmed(reversal.Id, context.Value);
+        if (outcome.IsFailure)
+        {
+            return outcome.Error;
+        }
+
+        if (outcome.Value.Kind == TransitionKind.NoChange)
+        {
+            return Result.Success();
+        }
+
+        var ledger = await ExecuteLedgerActionAsync(session, original, outcome.Value.LedgerAction, cancellationToken, reversal.Id);
+        if (ledger.IsFailure)
+        {
+            return ledger.Error;
+        }
+
+        var saved = await _transactions.UpdateAsync(session, original, cancellationToken);
+        if (saved.IsFailure)
+        {
+            return saved.Error;
+        }
+
+        await EnqueueStatusEventAsync(session, original, previous, outcome.Value, command.Source, cancellationToken);
+        return Result.Success();
+    }
+
     private async Task<Result> ExecuteLedgerActionAsync(
-        IDatabaseSession session, Transaction transaction, LedgerAction action, CancellationToken cancellationToken)
+        IDatabaseSession session, Transaction transaction, LedgerAction action, CancellationToken cancellationToken, TransactionId? reversalId = null)
     {
         if (action != LedgerAction.None)
         {
@@ -149,6 +219,11 @@ public sealed class TransactionFinalizationService
                         session, new PostPaymentRequest(transaction.Id, routing.CurrentProvider.ProviderId), cancellationToken),
                 LedgerAction.Release =>
                     await _ledger.ReleaseReservationAsync(session, new ReleaseRequest(transaction.Id), cancellationToken),
+                LedgerAction.ReversalRelease =>
+                    await _ledger.ReleaseReservationAsync(session, new ReleaseRequest(transaction.Id, AsReversal: true), cancellationToken),
+                LedgerAction.CompensatingReversal when reversalId is { } reversal =>
+                    await _ledger.ReversePostedPaymentAsync(
+                        session, new ReversePostedPaymentRequest(transaction.Id, reversal.ToString()), cancellationToken),
                 _ => RansysError.Validation(
                     ErrorCodes.InvalidStateTransition, $"Ledger action {action} is not produced by a provider result for the original request."),
             };
@@ -180,6 +255,7 @@ public sealed class TransactionFinalizationService
                 ProcessingStatus.Failed when previous == ProcessingStatus.InDoubt => TransactionEventTypes.ResolvedFailed,
                 ProcessingStatus.Failed => TransactionEventTypes.Failed,
                 ProcessingStatus.Pending => TransactionEventTypes.Pending,
+                ProcessingStatus.Reversed => TransactionEventTypes.Reversed,
                 _ => TransactionEventTypes.InDoubt,
             };
 
