@@ -20,9 +20,9 @@ internal static class TransactionBuilder
 
     public static Transaction NewPayment(decimal amount = 100_000m) => New(TransactionType.Payment, Rp(amount));
 
-    public static Transaction NewInquiry() => New(TransactionType.Inquiry, amount: null);
+    public static Transaction NewInquiry() => New(TransactionType.Inquiry, Rp(0m));
 
-    public static Transaction New(TransactionType type, global::Ransys.Domain.Monetary.Money? amount, TransactionId? original = null)
+    public static Transaction New(TransactionType type, global::Ransys.Domain.Monetary.Money amount, TransactionId? original = null)
     {
         var id = NewTransactionId();
         var fingerprint = TransactionFingerprint.Compute(FingerprintInput());
@@ -38,7 +38,7 @@ internal static class TransactionBuilder
 
     public static Transaction Validated(Transaction t)
     {
-        Ok(t.Validate(t.Amount is null ? null : Fee2500, TransactionConfigurationSnapshot.None, Ctx("VALIDATION_OK")));
+        Ok(t.Validate(t.RequiresReservation ? Fee2500 : null, TransactionConfigurationSnapshot.None, Ctx("VALIDATION_OK")));
         return t;
     }
 

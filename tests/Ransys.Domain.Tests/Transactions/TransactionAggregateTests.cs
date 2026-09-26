@@ -28,18 +28,17 @@ public sealed class TransactionAggregateTests
     }
 
     [Fact]
-    public void Create_rejects_missing_amount_missing_original_and_reference_mismatch()
+    public void Create_rejects_missing_original_and_reference_mismatch()
     {
         var fingerprint = TransactionFingerprint.Compute(FingerprintInput());
-        TransactionDraft Draft(TransactionType type, global::Ransys.Domain.Monetary.Money? amount, string bagReference = "INV-001") => new(
+        TransactionDraft Draft(TransactionType type, global::Ransys.Domain.Monetary.Money amount, string bagReference = "INV-001") => new(
             TransactionIdentity.Create(NewTransactionId(), "INV-001", null, fingerprint).Value,
             type, Merchant, Channel, Product, amount, null, null, null,
             TransactionReferences.Create(bagReference).Value, ExtensionMetadata.Empty, T0);
 
-        Assert.Equal(ErrorCodes.TransactionAmountRequired, Transaction.Create(Draft(TransactionType.Payment, null)).Error.Code);
         Assert.Equal(ErrorCodes.OriginalTransactionRequired, Transaction.Create(Draft(TransactionType.Refund, Rp(1m))).Error.Code);
         Assert.Equal(ErrorCodes.ReferenceMismatch, Transaction.Create(Draft(TransactionType.Payment, Rp(1m), "OTHER")).Error.Code);
-        Assert.True(Transaction.Create(Draft(TransactionType.Inquiry, null)).IsSuccess);
+        Assert.True(Transaction.Create(Draft(TransactionType.Inquiry, Rp(0m))).IsSuccess);
     }
 
     [Fact]

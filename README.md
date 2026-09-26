@@ -54,7 +54,7 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 | 1 Repository foundation | Done |
 | 2 Canonical domain types | Done |
 | 3 Transaction aggregate | Done |
-| 4 PostgreSQL persistence | Pending |
+| 4 PostgreSQL persistence | Done |
 | 5 Ledger posting service | Pending |
 | 6 Idempotency service | Pending |
 | 7 Transaction attempts | Pending |
@@ -70,4 +70,5 @@ Accepted ADRs are listed in [`docs/decisions/`](docs/decisions/). Items still op
 - Refund fee policy (ADR-010).
 - Original provider result arriving while a reversal of an unposted transaction is pending (ADR-012, interim: rejected without mutation).
 - Original-side refund summary transitions (PS-11..PS-13) wait for the refund use case.
+- Transaction columns missing from DDL v1.1: routing audit and canonical detail (ADR-013, implemented, pending review).
 - Items deferred to later design documents: OpenAPI v1, SIGNED_API contract, Provider Adapter Contract v1, response code catalog, configuration schema, SOAP/ISO8583 profiles.

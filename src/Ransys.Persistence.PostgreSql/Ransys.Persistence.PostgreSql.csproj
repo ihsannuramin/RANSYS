@@ -7,4 +7,15 @@
     <ProjectReference Include="../Ransys.Configuration/Ransys.Configuration.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Dapper" />
+    <PackageReference Include="dbup-postgresql" />
+    <PackageReference Include="Npgsql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Versioned, immutable schema migrations (ADR-011). Applied in file-name order. -->
+    <EmbeddedResource Include="Migrations/Scripts/*.sql" />
+  </ItemGroup>
+
 </Project>

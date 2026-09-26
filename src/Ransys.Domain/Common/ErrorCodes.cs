@@ -35,7 +35,9 @@ public static class ErrorCodes
     public const string AttemptOutcomeAlreadyRecorded = "ATTEMPT_OUTCOME_ALREADY_RECORDED";
 
     public const string InvalidStateTransition = "INVALID_STATE_TRANSITION";
-    public const string TransactionAmountRequired = "TRANSACTION_AMOUNT_REQUIRED";
+    public const string PersistedStateInvalid = "PERSISTED_STATE_INVALID";
+    public const string ConcurrencyConflict = "CONCURRENCY_CONFLICT";
+    public const string ReferenceDataNotFound = "REFERENCE_DATA_NOT_FOUND";
     public const string OriginalTransactionRequired = "ORIGINAL_TRANSACTION_REQUIRED";
     public const string ReferenceMismatch = "REFERENCE_MISMATCH";
     public const string ReservationNotApplicable = "RESERVATION_NOT_APPLICABLE";

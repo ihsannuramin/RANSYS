@@ -12,6 +12,9 @@ namespace Ransys.Domain.Routing;
 /// </summary>
 public sealed record RoutingDecision
 {
+    /// <summary>Failover reasons are reason codes (ADR-013 <c>failover_reason varchar(64)</c>).</summary>
+    public const int MaxFailoverReasonLength = 64;
+
     private RoutingDecision(
         ProviderReference initialProvider,
         ProviderReference currentProvider,
@@ -78,6 +81,11 @@ public sealed record RoutingDecision
             return Invalid("A failover reason is required when failover occurred.");
         }
 
+        if (failoverReason?.Length > MaxFailoverReasonLength)
+        {
+            return Invalid($"Failover reason exceeds {MaxFailoverReasonLength} characters.");
+        }
+
         return new RoutingDecision(
             initialProvider, currentProvider, ruleVersion, failoverCount, failoverReason, decisionTimestamp);
     }
@@ -96,6 +104,11 @@ public sealed record RoutingDecision
         if (string.IsNullOrWhiteSpace(reason))
         {
             return Invalid("A failover reason is required.");
+        }
+
+        if (reason.Length > MaxFailoverReasonLength)
+        {
+            return Invalid($"Failover reason exceeds {MaxFailoverReasonLength} characters.");
         }
 
         if (decidedAt < DecisionTimestamp)

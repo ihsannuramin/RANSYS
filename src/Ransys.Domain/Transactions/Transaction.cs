@@ -13,7 +13,7 @@ public sealed record TransactionDraft(
     MerchantId MerchantId,
     ChannelId ChannelId,
     ProductId ProductId,
-    Money? Amount,
+    Money Amount,
     Customer? Customer,
     TransactionEndpoint? Source,
     TransactionEndpoint? Destination,
@@ -72,8 +72,11 @@ public sealed class Transaction
 
     public ProductId ProductId { get; }
 
-    /// <summary>Principal. Required for reserving families; optional for e.g. inquiries.</summary>
-    public Money? Amount { get; }
+    /// <summary>
+    /// Principal. Always present (Canonical Contracts <c>CanonicalTransaction.Amount</c>, DDL <c>amount NOT NULL</c>);
+    /// non-monetary requests such as inquiries carry an explicit zero supplied by the caller.
+    /// </summary>
+    public Money Amount { get; }
 
     /// <summary>Captured at validation; financial terms never change afterwards.</summary>
     public FeeComponents? Fees { get; private set; }
@@ -105,7 +108,7 @@ public sealed class Transaction
 
     public string? ResponseCode { get; private set; }
 
-    public string ReasonCode { get; private set; }
+    public string? ReasonCode { get; private set; }
 
     public string? ReasonDescription { get; private set; }
 
@@ -121,10 +124,89 @@ public sealed class Transaction
 
     public bool RequiresReservation => TransactionTypeRules.RequiresReservation(Type);
 
-    /// <summary>State changes not yet persisted, in order. Cleared by the persistence layer after commit.</summary>
+    /// <summary>
+    /// Optimistic concurrency version of the persisted row (<c>core.transactions.row_version</c>);
+    /// 0 for a transaction that has never been persisted (State Transition Matrix §57).
+    /// </summary>
+    public long RowVersion { get; private set; }
+
+    public bool IsPersisted => RowVersion > 0;
+
+    /// <summary>State changes not yet persisted, in order.</summary>
     public IReadOnlyList<StateChange> PendingStateChanges => _pendingStateChanges;
 
     public void ClearPendingStateChanges() => _pendingStateChanges.Clear();
+
+    /// <summary>
+    /// Called by the persistence layer after a successful insert/update commit: records the new row version
+    /// and clears the pending history that was written.
+    /// </summary>
+    public void MarkPersisted(long rowVersion)
+    {
+        if (rowVersion <= RowVersion)
+        {
+            throw new InvalidOperationException($"Row version must increase (current {RowVersion}, new {rowVersion}).");
+        }
+
+        RowVersion = rowVersion;
+        _pendingStateChanges.Clear();
+    }
+
+    /// <summary>
+    /// Rebuilds a persisted transaction. Cross-dimension invariants are re-checked; persisted state that
+    /// violates them is reported (fail closed) instead of being loaded.
+    /// </summary>
+    public static Result<Transaction> Rehydrate(TransactionSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        if (snapshot.RowVersion <= 0)
+        {
+            return PersistedStateInvalid(snapshot, "row version must be positive");
+        }
+
+        if (snapshot.Fees is not null && snapshot.Fees.Currency != snapshot.Amount.Currency)
+        {
+            return PersistedStateInvalid(snapshot, "fee currency differs from transaction currency");
+        }
+
+        if (snapshot.ReserveAmount is not null && snapshot.ReserveAmount.Currency != snapshot.Amount.Currency)
+        {
+            return PersistedStateInvalid(snapshot, "reserve currency differs from transaction currency");
+        }
+
+        var transaction = new Transaction(snapshot.ToDraft())
+        {
+            Fees = snapshot.Fees,
+            ReserveAmount = snapshot.ReserveAmount,
+            Routing = snapshot.Routing,
+            Configuration = snapshot.Configuration,
+            ProcessingStatus = snapshot.ProcessingStatus,
+            FinancialStatus = snapshot.FinancialStatus,
+            ReconciliationStatus = snapshot.ReconciliationStatus,
+            SettlementStatus = snapshot.SettlementStatus,
+            ResponseCode = snapshot.ResponseCode,
+            ReasonCode = snapshot.ReasonCode,
+            ReasonDescription = snapshot.ReasonDescription,
+            ValidatedAt = snapshot.ValidatedAt,
+            FinancialPostedAt = snapshot.FinancialPostedAt,
+            CompletedAt = snapshot.CompletedAt,
+            UpdatedAt = snapshot.UpdatedAt,
+            RowVersion = snapshot.RowVersion,
+        };
+
+        var validatedStateHasFees = transaction.ValidatedAt is null || transaction.Fees is not null;
+        if (!transaction.InvariantsHold() || !validatedStateHasFees)
+        {
+            return PersistedStateInvalid(snapshot, "cross-dimension invariants do not hold");
+        }
+
+        return transaction;
+    }
+
+    private static RansysError PersistedStateInvalid(TransactionSnapshot snapshot, string detail) =>
+        new(ErrorCodes.PersistedStateInvalid, ErrorCategory.Internal,
+            $"Persisted transaction {snapshot.Identity.RansysTransactionId} is inconsistent: {detail}.");
 
     /// <summary>PS-01: creates the transaction in RECEIVED / NONE / UNMATCHED / NOT_APPLICABLE.</summary>
     public static Result<Transaction> Create(TransactionDraft draft)
@@ -133,6 +215,7 @@ public sealed class Transaction
         ArgumentNullException.ThrowIfNull(draft.Identity);
         ArgumentNullException.ThrowIfNull(draft.References);
         ArgumentNullException.ThrowIfNull(draft.Metadata);
+        ArgumentNullException.ThrowIfNull(draft.Amount);
 
         if (!Enum.IsDefined(draft.Type))
         {
@@ -143,12 +226,6 @@ public sealed class Transaction
         {
             return RansysError.Validation(
                 ErrorCodes.ReferenceMismatch, "Reference bag client reference must equal the identity client reference.", "references");
-        }
-
-        if (TransactionTypeRules.RequiresReservation(draft.Type) && draft.Amount is null)
-        {
-            return RansysError.Validation(
-                ErrorCodes.TransactionAmountRequired, "A reserving transaction requires an amount.", "amount");
         }
 
         if (TransactionTypeRules.RequiresOriginalTransaction(draft.Type) && draft.Identity.OriginalTransactionId is null)
@@ -186,19 +263,14 @@ public sealed class Transaction
             return Invalid(nameof(Validate));
         }
 
-        if (Amount is null && fees is { Items.Length: > 0 })
-        {
-            return RansysError.Validation(ErrorCodes.FeeCurrencyMismatch, "Fees require a transaction amount.", "fees");
-        }
-
-        if (Amount is not null && fees is not null && fees.Currency != Amount.Currency)
+        if (fees is not null && fees.Currency != Amount.Currency)
         {
             return RansysError.Validation(ErrorCodes.FeeCurrencyMismatch, "Fees must use the transaction currency.", "fees");
         }
 
         var changes = new List<StateChange>();
         ChangeProcessing(ProcessingStatus.Validated, context, changes);
-        Fees = fees ?? (Amount is null ? null : FeeComponents.None(Amount.Currency));
+        Fees = fees ?? FeeComponents.None(Amount.Currency);
         Configuration = configuration;
         ValidatedAt = context.OccurredAt;
         return Commit(context, changes, LedgerAction.None);
@@ -228,7 +300,7 @@ public sealed class Transaction
             return Invalid(nameof(MarkReserved));
         }
 
-        var reserve = Fees!.CalculateReserveAmount(Amount!);
+        var reserve = Fees!.CalculateReserveAmount(Amount);
         if (reserve.IsFailure)
         {
             return reserve.Error;
@@ -618,6 +690,15 @@ public sealed class Transaction
     /// </summary>
     private void AssertInvariants()
     {
+        if (!InvariantsHold())
+        {
+            throw new InvalidOperationException(
+                $"Transaction {Id} violates aggregate invariants: processing={ProcessingStatus} financial={FinancialStatus}.");
+        }
+    }
+
+    private bool InvariantsHold()
+    {
         var financialOk = !RequiresReservation
             ? FinancialStatus == FinancialStatus.None
             : ProcessingStatus switch
@@ -635,10 +716,6 @@ public sealed class Transaction
 
         var reserveOk = FinancialStatus == FinancialStatus.None || ReserveAmount is not null;
 
-        if (!financialOk || !reserveOk)
-        {
-            throw new InvalidOperationException(
-                $"Transaction {Id} violates aggregate invariants: processing={ProcessingStatus} financial={FinancialStatus}.");
-        }
+        return financialOk && reserveOk;
     }
 }

@@ -15,6 +15,8 @@ dotnet test tests/Ransys.Domain.Tests       # single project
 dotnet test Ransys.sln --filter "FullyQualifiedName~DependencyRulesTests"   # single class/test
 ```
 
+To run DB tests from a shell that predates the user-level env var: `export RANSYS_TEST_PG="$(powershell.exe -NoProfile -Command "[Environment]::GetEnvironmentVariable('RANSYS_TEST_PG','User')" | tr -d '\r')"`. Don't echo it; it contains the password.
+
 DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connection string comes from the env var `RANSYS_TEST_PG` (see `tests/Ransys.Testing.PostgreSql/TestDatabaseSettings.cs`). Never substitute in-memory/SQLite for locking, unique-index, trigger, or `SKIP LOCKED` tests. Docker is not installed on this machine.
 
 ## Implementation rules (decided, see `docs/decisions/ADR-*.md`)
@@ -26,6 +28,14 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 - Only Transaction Core writes `transaction_attempts`. An attempt with no recorded outcome counts as possibly sent, so the transaction goes IN_DOUBT and never fails over (ADR-005).
 - If implementation conflicts with the docs, write a new `docs/decisions/ADR-xxx-<topic>.md` (Context, Existing RANSYS rule, Technical issue, Options, Recommended option, Consequences) instead of choosing silently. Mark gaps `TODO / Architecture Decision Required`.
 - Expected business outcomes (`INSUFFICIENT_BALANCE`, `DUPLICATE_REFERENCE_CONFLICT`, `INVALID_STATE_TRANSITION`, `POSTING_ALREADY_EXISTS`) are returned as results, not thrown. `Result`/`Result<T>`/`RansysError` live in `Ransys.Domain.Common` (the Domain can't reference Application). Programming errors (empty GUID IDs, currency mismatch in `Money` arithmetic) throw.
+
+## Persistence conventions (`src/Ransys.Persistence.PostgreSql`)
+
+- Schema changes are new files in `Migrations/Scripts/NNNN_*.sql` (embedded, applied in name order by `DatabaseMigrator` via DbUp, journal `public.ransys_schema_versions`). Never edit a released script. `0001` must stay byte-identical (modulo line endings) to the reference DDL, and `MigrationTests` checks this. Additive changes use expand migrations (`0002` = ADR-004, `0003` = ADR-013).
+- All DB work goes through a `PostgresSession` (one connection + one explicit transaction). Stores take the session as their first argument so multiple stores commit atomically. Disposing without commit rolls back; after a rollback, reload aggregates because stores advance `RowVersion` optimistically.
+- Timestamps are written as UTC (`DbValues.ToDb`), because Npgsql rejects non-zero offsets for `timestamptz`. jsonb params need `CAST(@X AS jsonb)`. Dapper maps snake_case columns via `DbValues.EnsureConfigured()`.
+- Loading maps rows back through domain factories and `Transaction.Rehydrate`. Invalid persisted data returns `PERSISTED_STATE_INVALID` (fail closed) instead of loading.
+- DB test assemblies use `PostgresDatabaseFixture` through an xUnit collection defined in each test assembly (e.g. `tests/Ransys.Persistence.Tests/PostgresCollection.cs`). The fixture refuses databases not prefixed `RANSYS_PG`, holds a global advisory lock across assemblies, drops `core/ledger/integration/config/async`, migrates, and seeds `TestSeed`.
 
 ## Domain conventions (`src/Ransys.Domain`)
 
