@@ -75,7 +75,29 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 | 7 Transaction attempts | Done |
 | 8 Transactional outbox | Done |
 | 9 Routing foundation | Done |
-| 10 Concurrency scenarios | Pending |
+| 10 Concurrency scenarios | Done |
+
+## Phase 1 Definition of Done (main.md §28)
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| Solution builds successfully | Met | `dotnet build Ransys.sln`: 0 warnings, 0 errors (`TreatWarningsAsErrors`) |
+| Domain project has no infrastructure dependency | Met | `tests/Ransys.IntegrationTests/Architecture/DependencyRulesTests.cs` |
+| Canonical types are implemented | Met | `src/Ransys.Domain` (Money, IDs, identity, fingerprint, fees, references, endpoint, customer, routing decision, attempt) + `tests/Ransys.Domain.Tests` |
+| Transaction aggregate enforces valid transitions | Met | `Transaction` + `TransactionTransitions`; `ExhaustiveTransitionTests` runs every method in every reachable state |
+| PostgreSQL schema/migrations exist | Met | `src/Ransys.Persistence.PostgreSql/Migrations/Scripts` (DDL v1.1 + ADR-004/005/013 expand migrations), `MigrationTests` |
+| Wallet reserve is atomic | Met | `LedgerPostingService.ReserveAsync` (`FOR UPDATE`), `ReserveWithTransactionStateTests` |
+| Ledger postings balance | Met | `Journal.Create` + deferred DB trigger; `SchemaConstraintTests`, ledger-reconstructed projection checks |
+| Duplicate posting keys are safe | Met | Posting-key idempotency (`AlreadyPosted` / `POSTING_KEY_CONFLICT`); concurrent duplicate reserve/post tests |
+| Idempotency behavior works | Met | `IdempotencyService` (savepoint claim, lazy expiry, sweep); `IdempotencyServiceTests` (unit + PostgreSQL) |
+| Transaction attempts work | Met | `TransactionAttemptService`, `AttemptRecoveryService`; `TransactionAttemptTests` |
+| Outbox works brokerless | Met | `OutboxProcessor` + `OutboxWorker` (`FOR UPDATE SKIP LOCKED`, lease, retry, DEAD); `OutboxProcessorTests`; verified with the real worker host |
+| Same-wallet concurrent spend cannot create negative balance | Met | `Same_wallet_race_only_one_reservation_succeeds`, `Many_concurrent_reservations_never_overspend`, mixed reserve/finalize load test |
+| Timeout can remain `IN_DOUBT` with reserve held | Met | Aggregate `MarkInDoubt`, ledger `ChangeHoldReasonAsync`, `Timeout_goes_in_doubt_with_hold_kept...`, crash-recovery test |
+| Integration tests use actual PostgreSQL semantics | Met | `PostgresDatabaseFixture` (local PostgreSQL 18, `RANSYS_PG`); no in-memory/SQLite substitutes |
+| Documentation lists unresolved architecture decisions | Met | `docs/decisions/ADR-001…013` and the list below |
+
+Cross-component concurrency (main.md §22) is covered by `tests/Ransys.IntegrationTests/Concurrency/CrossComponentConcurrencyTests.cs`: duplicate provider results from several sources, status check vs reconciliation with contradicting results, callback vs recovery worker, and concurrent reservations with finalizations on one wallet (lock-order / deadlock check).
 
 ## Unresolved architecture decisions
 

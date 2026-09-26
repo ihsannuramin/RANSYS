@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-Phase 1 implementation is in progress. `main.md` is the implementation handoff: it defines the milestones, the non-negotiable invariants, and the "do not implement yet" list. The design documents in `docs/` are authoritative and are written in mixed Indonesian and English. Keep that style when editing them. Milestone status is tracked in `README.md`.
+Phase 1 (main.md milestones 1–10) is implemented; see the Definition of Done table in `README.md`. `main.md` is the implementation handoff: it defines the milestones, the non-negotiable invariants, and the "do not implement yet" list. The design documents in `docs/` are authoritative and are written in mixed Indonesian and English. Keep that style when editing them. Milestone status is tracked in `README.md`.
 
 ## Commands
 
@@ -43,6 +43,10 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 - Every operation follows lock order: caller locks the transaction row → service locks the wallet (`FOR UPDATE`) → the reservation → checks the posting key. A repeated key with the same terms returns `LedgerPostingOutcome.AlreadyPosted`; different terms return `POSTING_KEY_CONFLICT`. No network I/O inside the session.
 - Refunds and adjustments require an approval request id (maker-checker). Total refunds can never exceed the posted amount. Debit adjustments can never make a balance negative.
 - `PostgresLedgerStore` only inserts journals and never updates them (ADR-002). Ledger DB tests (`tests/Ransys.Ledger.Tests`) assert that the wallet projection equals the projection rebuilt from ledger entries. Keep that check in new scenarios.
+
+## Finalization (applying provider results)
+
+- Every provider result for the original request goes through `TransactionFinalizationService.ApplyAsync` (`src/Ransys.TransactionCore/Finalization`), whatever the source: sync response, callback, status check, advice, reconciliation. It locks the transaction row, applies the aggregate transition, executes the requested ledger action (POST / RELEASE, hold reason for IN_DOUBT), updates with `row_version`, and enqueues a `TRANSACTION` status event, all in one session. Don't write parallel paths that call the ledger directly for provider results.
 
 ## Transaction attempts (ADR-005)
 

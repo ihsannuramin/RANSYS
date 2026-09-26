@@ -16,6 +16,7 @@ using Ransys.Persistence.PostgreSql.ReferenceData;
 using Ransys.Persistence.PostgreSql.Transactions;
 using Ransys.Testing.PostgreSql;
 using Ransys.TransactionCore.Attempts;
+using Ransys.TransactionCore.Finalization;
 
 namespace Ransys.IntegrationTests;
 
@@ -36,7 +37,11 @@ internal sealed class CoreHarness
         Ledger = new LedgerPostingService(new PostgresLedgerStore(new ReferenceDataStore()), new PostgresOutboxWriter(), clock, ids);
         Attempts = new TransactionAttemptService(AttemptStore, clock, ids);
         Recovery = new AttemptRecoveryService(Transactions, AttemptStore, Attempts, Ledger, clock);
+        Finalization = new TransactionFinalizationService(
+            new PostgresSessionFactory(db.DataSource), Transactions, Ledger, new PostgresOutboxWriter(), clock, ids);
     }
+
+    public TransactionFinalizationService Finalization { get; }
 
     public TransactionStore Transactions { get; }
 
@@ -60,9 +65,9 @@ internal sealed class CoreHarness
     public Task<PostgresSession> Session() => PostgresSession.BeginAsync(_db.DataSource);
 
     /// <summary>Payment of 100,000 + 2,500 fee, reserved on a funded wallet and PROCESSING on provider A (SD-01 up to the provider call).</summary>
-    public async Task<(TransactionId Transaction, WalletId Wallet)> ProcessingPayment()
+    public async Task<(TransactionId Transaction, WalletId Wallet)> ProcessingPayment(WalletId? sharedWallet = null)
     {
-        var wallet = await NewFundedWallet(1_000_000m);
+        var wallet = sharedWallet ?? await NewFundedWallet(1_000_000m);
         var transaction = NewPayment(100_000m);
         transaction.Validate(Fee2500(), TransactionConfigurationSnapshot.None, Ctx("VALIDATION_OK"));
 
