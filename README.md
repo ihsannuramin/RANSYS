@@ -52,7 +52,7 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 | Milestone | Status |
 |---|---|
 | 1 Repository foundation | Done |
-| 2 Canonical domain types | Pending |
+| 2 Canonical domain types | Done |
 | 3 Transaction aggregate | Pending |
 | 4 PostgreSQL persistence | Pending |
 | 5 Ledger posting service | Pending |

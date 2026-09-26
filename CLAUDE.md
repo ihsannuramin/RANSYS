@@ -25,7 +25,14 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 - Posting keys follow ADR-001 (`TX:<txId>:RESERVE|POST|RELEASE|REVERSAL_RELEASE|REVERSAL:<ref>|REFUND:<ref>`, `TOPUP:<ref>`, `ADJUSTMENT:<ref>`).
 - Only Transaction Core writes `transaction_attempts`. An attempt with no recorded outcome counts as possibly sent, so the transaction goes IN_DOUBT and never fails over (ADR-005).
 - If implementation conflicts with the docs, write a new `docs/decisions/ADR-xxx-<topic>.md` (Context, Existing RANSYS rule, Technical issue, Options, Recommended option, Consequences) instead of choosing silently. Mark gaps `TODO / Architecture Decision Required`.
-- Expected business outcomes (`INSUFFICIENT_BALANCE`, `DUPLICATE_REFERENCE_CONFLICT`, `INVALID_STATE_TRANSITION`, `POSTING_ALREADY_EXISTS`) are returned as results, not thrown.
+- Expected business outcomes (`INSUFFICIENT_BALANCE`, `DUPLICATE_REFERENCE_CONFLICT`, `INVALID_STATE_TRANSITION`, `POSTING_ALREADY_EXISTS`) are returned as results, not thrown. `Result`/`Result<T>`/`RansysError` live in `Ransys.Domain.Common` (the Domain can't reference Application). Programming errors (empty GUID IDs, currency mismatch in `Money` arithmetic) throw.
+
+## Domain conventions (`src/Ransys.Domain`)
+
+- Value objects are created only through static `Create(...)` factories returning `Result<T>`. They validate and never trim or truncate input. The one exception is the provider response message, which is truncated to 500 characters so an outcome is never lost.
+- `Money` lives in `Ransys.Domain.Monetary` (not `.Money`, to avoid a namespace/type clash). It is non-negative, carries a `CurrencyDefinition` (code + version + scale) and has no operators. Use `Add`/`Subtract`/`IsGreaterThan`.
+- Persisted/wire enum values come only from `CanonicalCodes` (explicit SCREAMING_SNAKE maps). `CanonicalCodesTests` checks them against the DDL CHECK constraints, so update the DDL-derived migration and the map together.
+- `TransactionAttempt.MayHaveReachedProvider` is the only failover guard. It is true unless a recorded outcome proves the request was not sent (ADR-005).
 
 RANSYS is a universal transaction switching and processing platform. It receives financial transactions from merchants and channels (REST/JSON, SOAP/XML, ISO 8583, TCP/proprietary), then routes them to banks, billers, and suppliers. It is a full processing platform with its own wallet and ledger, not just a message router.
 
