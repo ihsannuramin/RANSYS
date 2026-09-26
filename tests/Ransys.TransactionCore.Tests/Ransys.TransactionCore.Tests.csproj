@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Ransys.TransactionCore/Ransys.TransactionCore.csproj" />
+  </ItemGroup>
+
+</Project>

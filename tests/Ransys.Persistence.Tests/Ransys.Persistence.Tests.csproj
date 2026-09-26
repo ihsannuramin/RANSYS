@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Ransys.Persistence.PostgreSql/Ransys.Persistence.PostgreSql.csproj" />
+    <ProjectReference Include="../Ransys.Testing.PostgreSql/Ransys.Testing.PostgreSql.csproj" />
+  </ItemGroup>
+
+</Project>

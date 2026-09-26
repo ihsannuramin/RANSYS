@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="../Ransys.Application/Ransys.Application.csproj" />
+    <ProjectReference Include="../Ransys.Contracts/Ransys.Contracts.csproj" />
+    <ProjectReference Include="../Ransys.Ledger/Ransys.Ledger.csproj" />
+    <ProjectReference Include="../Ransys.Routing/Ransys.Routing.csproj" />
+    <ProjectReference Include="../Ransys.Configuration/Ransys.Configuration.csproj" />
+  </ItemGroup>
+
+</Project>

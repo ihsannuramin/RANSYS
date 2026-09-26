@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="../Ransys.Application/Ransys.Application.csproj" />
+  </ItemGroup>
+
+</Project>

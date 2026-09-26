@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="../Ransys.TransactionCore/Ransys.TransactionCore.csproj" />
+    <ProjectReference Include="../Ransys.Persistence.PostgreSql/Ransys.Persistence.PostgreSql.csproj" />
+    <ProjectReference Include="../Ransys.Infrastructure/Ransys.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>
