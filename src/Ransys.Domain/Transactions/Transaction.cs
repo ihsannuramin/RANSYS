@@ -392,6 +392,78 @@ public sealed class Transaction
         return Result.Success();
     }
 
+    /// <summary>
+    /// Decides whether a new provider attempt may be created (ADR-005, State Transition Matrix §15, §64–66):
+    /// <list type="bullet">
+    /// <item>attempts always target the current routed provider (other providers only via <see cref="RecordFailover"/>);</item>
+    /// <item>a new financial request (PAYMENT/REFUND) is allowed only while PROCESSING and only if every earlier
+    /// financial request provably never left RANSYS; there is no hidden retry after a possible send;</item>
+    /// <item>STATUS_CHECK is allowed while the outcome is open (PROCESSING/PENDING/IN_DOUBT/REVERSAL_PENDING);</item>
+    /// <item>REVERSAL is allowed only while REVERSAL_PENDING.</item>
+    /// </list>
+    /// </summary>
+    public Result AuthorizeAttempt(AttemptType attemptType, ProviderReference provider, IReadOnlyCollection<TransactionAttempt> priorAttempts)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        ArgumentNullException.ThrowIfNull(priorAttempts);
+
+        if (Routing is null)
+        {
+            return AttemptNotAllowed(attemptType, "the transaction has no routing decision");
+        }
+
+        if (provider.ProviderId != Routing.CurrentProvider.ProviderId)
+        {
+            return AttemptNotAllowed(attemptType, "attempts must target the current routed provider");
+        }
+
+        if (priorAttempts.Any(a => a.TransactionId != Id))
+        {
+            throw new ArgumentException("Prior attempts must belong to this transaction.", nameof(priorAttempts));
+        }
+
+        switch (attemptType)
+        {
+            case AttemptType.Payment or AttemptType.Refund:
+                if (ProcessingStatus != ProcessingStatus.Processing)
+                {
+                    return AttemptNotAllowed(attemptType, "a financial request can only be sent while PROCESSING");
+                }
+
+                var possiblySent = priorAttempts.FirstOrDefault(a =>
+                    a.AttemptType is AttemptType.Payment or AttemptType.Refund && a.MayHaveReachedProvider);
+                return possiblySent is null
+                    ? Result.Success()
+                    : RansysError.Financial(
+                        ErrorCodes.FailoverNotAllowed,
+                        $"Attempt {possiblySent.AttemptNumber} may have reached the provider; a new financial request is not allowed (IN_DOUBT handling applies).");
+
+            case AttemptType.Inquiry:
+                return ProcessingStatus == ProcessingStatus.Processing
+                    ? Result.Success()
+                    : AttemptNotAllowed(attemptType, "an inquiry can only be sent while PROCESSING");
+
+            case AttemptType.StatusCheck or AttemptType.Advice:
+                return ProcessingStatus is ProcessingStatus.Processing or ProcessingStatus.Pending
+                    or ProcessingStatus.InDoubt or ProcessingStatus.ReversalPending
+                    ? Result.Success()
+                    : AttemptNotAllowed(attemptType, "the transaction outcome is already final");
+
+            case AttemptType.Reversal:
+                return ProcessingStatus == ProcessingStatus.ReversalPending
+                    ? Result.Success()
+                    : AttemptNotAllowed(attemptType, "a reversal request needs REVERSAL_PENDING");
+
+            default:
+                return AttemptNotAllowed(attemptType, "unknown attempt type");
+        }
+    }
+
+    private RansysError AttemptNotAllowed(AttemptType attemptType, string reason) =>
+        RansysError.Conflict(
+            ErrorCodes.AttemptNotAllowed,
+            $"{attemptType} attempt not allowed for transaction {Id} (processing={CanonicalCodes.ProcessingStatus.ToCode(ProcessingStatus)}): {reason}.");
+
     /// <summary>PS-07: PROCESSING → PENDING (provider explicitly reports pending). Reservation stays.</summary>
     public Result<TransitionOutcome> MarkPending(TransitionContext context)
     {

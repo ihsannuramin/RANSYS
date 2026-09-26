@@ -69,7 +69,7 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 | 4 PostgreSQL persistence | Done |
 | 5 Ledger posting service | Done |
 | 6 Idempotency service | Done |
-| 7 Transaction attempts | Pending |
+| 7 Transaction attempts | Done |
 | 8 Transactional outbox | Pending |
 | 9 Routing foundation | Pending |
 | 10 Concurrency scenarios | Pending |
@@ -84,4 +84,5 @@ Accepted ADRs are listed in [`docs/decisions/`](docs/decisions/). Items still op
 - FROZEN/CLOSED wallet semantics beyond "no new debits" are not specified.
 - Original provider result arriving while a reversal of an unposted transaction is pending (ADR-012, interim: rejected without mutation).
 - Original-side refund summary transitions (PS-11..PS-13) wait for the refund use case.
+- Minimum age before recovering an outcome-less attempt must exceed the longest provider timeout; the recovery worker schedule is not yet configured (service implemented, no hosted loop).
 - Items deferred to later design documents: OpenAPI v1, SIGNED_API contract, Provider Adapter Contract v1, response code catalog, configuration schema, SOAP/ISO8583 profiles.

@@ -33,6 +33,8 @@ public static class ErrorCodes
 
     public const string AttemptInconsistentTransport = "ATTEMPT_INCONSISTENT_TRANSPORT";
     public const string AttemptOutcomeAlreadyRecorded = "ATTEMPT_OUTCOME_ALREADY_RECORDED";
+    public const string AttemptNotAllowed = "ATTEMPT_NOT_ALLOWED";
+    public const string AttemptNotFound = "ATTEMPT_NOT_FOUND";
 
     public const string InvalidStateTransition = "INVALID_STATE_TRANSITION";
     public const string InsufficientBalance = "INSUFFICIENT_BALANCE";

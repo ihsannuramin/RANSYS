@@ -6,6 +6,8 @@ using Ransys.Domain.Monetary;
 using Ransys.Domain.Routing;
 using Ransys.Domain.Transactions;
 using Ransys.Persistence.PostgreSql.ReferenceData;
+using Ransys.TransactionCore;
+using Ransys.Application;
 
 namespace Ransys.Persistence.PostgreSql.Transactions;
 
@@ -26,7 +28,7 @@ public enum RowLock
 /// state history (ADR-004), inside the caller's <see cref="PostgresSession"/>.
 /// Updates use optimistic concurrency on <c>row_version</c> (State Transition Matrix §57, ERD v1.1 §44).
 /// </summary>
-public sealed class TransactionStore
+public sealed class TransactionStore : ITransactionRepository
 {
     private const string SelectSql = """
         SELECT t.ransys_transaction_id, t.merchant_id, t.channel_id, t.product_id, t.transaction_type,
@@ -142,9 +144,9 @@ public sealed class TransactionStore
         _referenceData = referenceData ?? throw new ArgumentNullException(nameof(referenceData));
 
     /// <summary>Inserts a new transaction with its pending history (and fee components if already validated).</summary>
-    public async Task<Result> InsertAsync(PostgresSession session, Transaction transaction, CancellationToken cancellationToken = default)
+    public async Task<Result> InsertAsync(IDatabaseSession databaseSession, Transaction transaction, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(session);
+        var session = PostgresSessionCast.From(databaseSession);
         ArgumentNullException.ThrowIfNull(transaction);
         if (transaction.IsPersisted)
         {
@@ -191,9 +193,9 @@ public sealed class TransactionStore
     /// Writes state changes of a loaded transaction. Fails with <see cref="ErrorCodes.ConcurrencyConflict"/>
     /// when another writer updated the row since it was loaded; the caller reloads and re-evaluates.
     /// </summary>
-    public async Task<Result> UpdateAsync(PostgresSession session, Transaction transaction, CancellationToken cancellationToken = default)
+    public async Task<Result> UpdateAsync(IDatabaseSession databaseSession, Transaction transaction, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(session);
+        var session = PostgresSessionCast.From(databaseSession);
         ArgumentNullException.ThrowIfNull(transaction);
         if (!transaction.IsPersisted)
         {
@@ -234,9 +236,9 @@ public sealed class TransactionStore
     /// <see cref="ErrorCodes.PersistedStateInvalid"/> failure when persisted data violates domain rules (fail closed).
     /// </summary>
     public async Task<Result<Transaction?>> GetAsync(
-        PostgresSession session, TransactionId id, RowLock rowLock = RowLock.None, CancellationToken cancellationToken = default)
+        IDatabaseSession databaseSession, TransactionId id, RowLock rowLock = RowLock.None, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(session);
+        var session = PostgresSessionCast.From(databaseSession);
 
         var sql = rowLock switch
         {
@@ -260,6 +262,10 @@ public sealed class TransactionStore
         var transaction = TransactionRowMapper.ToAggregate(row, fees);
         return transaction.IsSuccess ? transaction.Value : transaction.Error;
     }
+
+    Task<Result<Transaction?>> ITransactionRepository.GetAsync(
+        IDatabaseSession session, TransactionId id, bool forUpdate, CancellationToken cancellationToken) =>
+        GetAsync(session, id, forUpdate ? RowLock.ForUpdate : RowLock.None, cancellationToken);
 
     /// <summary>Columns that change during the transaction lifecycle.</summary>
     private static object StateParameters(Transaction t) => new

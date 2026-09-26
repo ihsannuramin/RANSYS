@@ -38,4 +38,7 @@ public static class ReasonCodes
     public const string TransactionReceived = "TRANSACTION_RECEIVED";
     public const string ConflictingProviderResult = "CONFLICTING_PROVIDER_RESULT";
     public const string ReversalDeclined = "REVERSAL_DECLINED";
+
+    /// <summary>Attempt left without a recorded outcome (e.g. Core restart mid-call); ADR-005 recovery.</summary>
+    public const string AttemptOutcomeUnknown = "ATTEMPT_OUTCOME_UNKNOWN";
 }

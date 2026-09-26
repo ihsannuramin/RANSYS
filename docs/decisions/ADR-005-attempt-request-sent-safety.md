@@ -26,3 +26,9 @@ Option 2:
 
 ## Consequences
 Slightly more IN_DOUBT cases after crashes, and never a double financial request. The recovery worker must scan for outcome-less attempts.
+
+## Implementation note (Milestone 7)
+- Migration `0004` adds `core.transaction_attempts.outcome_recorded_at` (expand). A started attempt is inserted **before** the provider call and stored pessimistically as `request_sent = true`, `transport_status = 'SENT'`, `outcome_recorded_at = NULL`, so any reader that ignores the marker still sees "possibly sent". Recording the outcome sets the real values and the marker exactly once (`WHERE outcome_recorded_at IS NULL`); the row is immutable afterwards.
+- `Transaction.AuthorizeAttempt` enforces: attempts target the current routed provider; a new PAYMENT/REFUND request is allowed only while PROCESSING and only if every earlier financial request proves not-sent; STATUS_CHECK/ADVICE only while the outcome is open; REVERSAL only while REVERSAL_PENDING.
+- `AttemptResolution.Classify` maps network truth + adapter outcome to NotSent / Success / Failed / Pending / InDoubt. Only an explicit, consistent provider response is definitive; everything else is InDoubt.
+- `AttemptRecoveryService` closes outcome-less attempts older than a minimum age (longer than the provider timeout) with an explicit unknown outcome (`request_sent = true`, TIMEOUT, metadata `extension.recovery.outcomeSource = SYSTEM_RECOVERY`) and moves the transaction to IN_DOUBT with the reservation held. It never regresses a transaction that another path already resolved.

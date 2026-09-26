@@ -44,6 +44,12 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 - Refunds and adjustments require an approval request id (maker-checker). Total refunds can never exceed the posted amount. Debit adjustments can never make a balance negative.
 - `PostgresLedgerStore` only inserts journals and never updates them (ADR-002). Ledger DB tests (`tests/Ransys.Ledger.Tests`) assert that the wallet projection equals the projection rebuilt from ledger entries. Keep that check in new scenarios.
 
+## Transaction attempts (ADR-005)
+
+- Create attempts only via `TransactionAttemptService.StartAsync` while holding the transaction row lock, and **commit before calling the provider**. It runs `Transaction.AuthorizeAttempt`, so there are no new financial requests after a possible send and attempts only target the current routed provider. Record results with `RecordOutcomeAsync`, exactly once.
+- DB representation: a started row is `request_sent=true, transport_status='SENT', outcome_recorded_at NULL` (migration `0004`). Only `outcome_recorded_at IS NOT NULL` means an outcome exists. Never downgrade `request_sent` except through a recorded adapter outcome.
+- Map results with `AttemptResolution.Classify`. `AttemptRecoveryService` turns outcome-less attempts into IN_DOUBT (never failover or release).
+
 ## Idempotency
 
 - New transactions are created only through `IdempotencyService.ClaimAsync(session, channel, identity, createTransaction)` (`src/Ransys.TransactionCore/Idempotency`). It returns `New` (your callback inserted the row), `ExistingTransaction` (return that transaction; discard the aggregate you built), or `DUPLICATE_REFERENCE_CONFLICT`. The callback runs under a savepoint, because losing the `ux_idempotency_active_reference` race aborts the PG transaction. Don't catch unique violations elsewhere to replicate this.
