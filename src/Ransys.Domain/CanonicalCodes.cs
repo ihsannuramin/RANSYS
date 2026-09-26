@@ -95,6 +95,24 @@ public static class CanonicalCodes
         (Attempts.TransportStatus.Timeout, "TIMEOUT"),
         (Attempts.TransportStatus.ConnectionError, "CONNECTION_ERROR"));
 
+    /// <summary>State Transition Matrix §59 (<c>transaction_state_history.change_source</c>).</summary>
+    public static readonly CodeMap<ChangeSource> ChangeSource = new(
+        (Transactions.ChangeSource.Core, "CORE"),
+        (Transactions.ChangeSource.SyncProviderResponse, "SYNC_PROVIDER_RESPONSE"),
+        (Transactions.ChangeSource.Callback, "CALLBACK"),
+        (Transactions.ChangeSource.StatusCheck, "STATUS_CHECK"),
+        (Transactions.ChangeSource.Advice, "ADVICE"),
+        (Transactions.ChangeSource.Reconciliation, "RECONCILIATION"),
+        (Transactions.ChangeSource.ManualAction, "MANUAL_ACTION"),
+        (Transactions.ChangeSource.SystemRecovery, "SYSTEM_RECOVERY"));
+
+    /// <summary>ADR-004 <c>transaction_state_history.status_dimension</c>.</summary>
+    public static readonly CodeMap<StatusDimension> StatusDimension = new(
+        (Transactions.StatusDimension.Processing, "PROCESSING"),
+        (Transactions.StatusDimension.Financial, "FINANCIAL"),
+        (Transactions.StatusDimension.Reconciliation, "RECONCILIATION"),
+        (Transactions.StatusDimension.Settlement, "SETTLEMENT"));
+
     public static readonly CodeMap<FeeComponentType> FeeComponentType = new(
         (Fees.FeeComponentType.MerchantServiceFee, "MERCHANT_SERVICE_FEE"),
         (Fees.FeeComponentType.ProviderFee, "PROVIDER_FEE"),
