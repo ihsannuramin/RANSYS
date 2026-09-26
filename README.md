@@ -31,7 +31,14 @@ Default when unset: `Host=localhost;Port=5432;Database=RANSYS_PG;Username=postgr
 
 ## Running the worker host
 
-`Ransys.Workers` requires the connection string `ConnectionStrings:TransactionDb` (for example through the environment variable `ConnectionStrings__TransactionDb`) and refuses to start without it. It currently runs the idempotency expiry sweep (`Ransys:IdempotencyExpiry:Interval`, `Ransys:IdempotencyExpiry:BatchSize`).
+`Ransys.Workers` requires the connection string `ConnectionStrings:TransactionDb` and refuses to start without it. Locally it comes from .NET User Secrets (stored outside the repository, loaded in Development):
+
+```bash
+dotnet user-secrets set "ConnectionStrings:TransactionDb" "<connection string>" --project src/Ransys.Workers
+dotnet run --project src/Ransys.Workers
+```
+
+Other environments supply it through the environment variable `ConnectionStrings__TransactionDb`. The host does not run migrations. It currently runs the idempotency expiry sweep (`Ransys:IdempotencyExpiry:Interval`, `Ransys:IdempotencyExpiry:BatchSize`).
 
 ## Solution layout
 

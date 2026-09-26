@@ -47,7 +47,7 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 ## Idempotency
 
 - New transactions are created only through `IdempotencyService.ClaimAsync(session, channel, identity, createTransaction)` (`src/Ransys.TransactionCore/Idempotency`). It returns `New` (your callback inserted the row), `ExistingTransaction` (return that transaction; discard the aggregate you built), or `DUPLICATE_REFERENCE_CONFLICT`. The callback runs under a savepoint, because losing the `ux_idempotency_active_reference` race aborts the PG transaction. Don't catch unique violations elsewhere to replicate this.
-- `IDatabaseSession` supports savepoints for this purpose. `Ransys.Workers` hosts `IdempotencyExpiryWorker` (ADR-009 sweep) and requires `ConnectionStrings:TransactionDb`.
+- `IDatabaseSession` supports savepoints for this purpose. `Ransys.Workers` hosts `IdempotencyExpiryWorker` (ADR-009 sweep) and requires `ConnectionStrings:TransactionDb` (set locally as a user secret, `UserSecretsId=ransys-workers-dev`; never commit it).
 
 ## Domain conventions (`src/Ransys.Domain`)
 

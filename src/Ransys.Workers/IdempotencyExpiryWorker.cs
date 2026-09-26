@@ -35,6 +35,7 @@ public sealed partial class IdempotencyExpiryWorker(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        LogStarted(options.Value.Interval, options.Value.BatchSize);
         while (!stoppingToken.IsCancellationRequested)
         {
             int expired;
@@ -60,6 +61,9 @@ public sealed partial class IdempotencyExpiryWorker(
             }
         }
     }
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Idempotency expiry worker started (interval {Interval}, batch {BatchSize})")]
+    private partial void LogStarted(TimeSpan interval, int batchSize);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Expired {Count} idempotency records")]
     private partial void LogExpired(int count);
