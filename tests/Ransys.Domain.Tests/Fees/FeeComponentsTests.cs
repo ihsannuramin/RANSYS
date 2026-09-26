@@ -39,8 +39,8 @@ public sealed class FeeComponentsTests
     {
         var fees = FeeComponents.Create(
         [
-            Fee(FeeComponentType.MerchantServiceFee, 2_500m, 2_500m, refundable: false),
-            Fee(FeeComponentType.Other, 1_000m, 1_000m, refundable: true),
+            Fee(FeeComponentType.MerchantServiceFee, 2_500m, 2_500m, FeeRefundPolicy.None),
+            Fee(FeeComponentType.Other, 1_000m, 1_000m, FeeRefundPolicy.ProRata),
         ], Idr).Value;
 
         Assert.Equal(Rp(3_500m), fees.MerchantChargeTotal);
@@ -57,7 +57,7 @@ public sealed class FeeComponentsTests
     public void Fees_must_use_transaction_currency()
     {
         var usdFee = FeeComponent.Create(
-            FeeComponentType.Other, Money.Create(1m, Usd).Value, Money.Create(1m, Usd).Value, Ransys, false, null).Value;
+            FeeComponentType.Other, Money.Create(1m, Usd).Value, Money.Create(1m, Usd).Value, Ransys, FeeRefundPolicy.None, null).Value;
 
         Assert.Equal(ErrorCodes.FeeCurrencyMismatch, FeeComponents.Create([usdFee], Idr).Error.Code);
         Assert.Equal(
@@ -70,10 +70,10 @@ public sealed class FeeComponentsTests
     {
         Assert.Equal(
             ErrorCodes.FeeCurrencyMismatch,
-            FeeComponent.Create(FeeComponentType.Tax, Rp(1m), Money.Create(1m, Usd).Value, Ransys, false, null).Error.Code);
+            FeeComponent.Create(FeeComponentType.Tax, Rp(1m), Money.Create(1m, Usd).Value, Ransys, FeeRefundPolicy.None, null).Error.Code);
         Assert.Equal(
             ErrorCodes.OutOfRange,
-            FeeComponent.Create(FeeComponentType.Tax, Rp(1m), Rp(1m), Ransys, false, 0).Error.Code);
+            FeeComponent.Create(FeeComponentType.Tax, Rp(1m), Rp(1m), Ransys, FeeRefundPolicy.None, 0).Error.Code);
     }
 
     [Fact]
@@ -84,6 +84,6 @@ public sealed class FeeComponentsTests
         Assert.Equal(ErrorCodes.InvalidFormat, FeeBeneficiary.Create("PROVIDER", Guid.Empty).Error.Code);
     }
 
-    private static FeeComponent Fee(FeeComponentType type, decimal charged, decimal accounting, bool refundable = false) =>
-        FeeComponent.Create(type, Rp(charged), Rp(accounting), Ransys, refundable, calculationRuleVersion: 7).Value;
+    private static FeeComponent Fee(FeeComponentType type, decimal charged, decimal accounting, FeeRefundPolicy refundPolicy = FeeRefundPolicy.None) =>
+        FeeComponent.Create(type, Rp(charged), Rp(accounting), Ransys, refundPolicy, calculationRuleVersion: 7).Value;
 }

@@ -150,6 +150,6 @@ internal sealed class CoreHarness
     }
 
     private static FeeComponents Fee2500() => FeeComponents.Create(
-        [FeeComponent.Create(FeeComponentType.MerchantServiceFee, Rp(2_500m), Rp(2_500m), FeeBeneficiary.Create("RANSYS").Value, false, 1).Value],
+        [FeeComponent.Create(FeeComponentType.MerchantServiceFee, Rp(2_500m), Rp(2_500m), FeeBeneficiary.Create("RANSYS").Value, FeeRefundPolicy.None, 1).Value],
         Idr).Value;
 }

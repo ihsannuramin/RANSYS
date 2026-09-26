@@ -77,7 +77,8 @@ public sealed class TransactionStoreTests(PostgresDatabaseFixture db)
         Assert.Equal((ProcessingStatus.Success, FinancialStatus.Posted), (loaded.ProcessingStatus, loaded.FinancialStatus));
         Assert.Equal(Money(102_500m), loaded.ReserveAmount);
         Assert.Equal(Money(2_500m), loaded.Fees!.MerchantChargeTotal);
-        Assert.Equal(FeeComponentType.MerchantServiceFee, Assert.Single(loaded.Fees.Items).ComponentType);
+        var fee = Assert.Single(loaded.Fees.Items);
+        Assert.Equal((FeeComponentType.MerchantServiceFee, FeeRefundPolicy.ProRata), (fee.ComponentType, fee.RefundPolicy));
         Assert.Equal(ProviderA, loaded.Routing!.InitialProvider);
         Assert.Equal(4, loaded.Configuration.ProviderPolicyVersion);
         Assert.Equal("0000", loaded.ResponseCode);
@@ -230,7 +231,7 @@ public sealed class TransactionStoreTests(PostgresDatabaseFixture db)
     private static TransitionContext Ctx(string reason) => TransitionContext.Create(reason, ChangeSource.Core, T0).Value;
 
     private static FeeComponents Fee2500() => FeeComponents.Create(
-        [FeeComponent.Create(FeeComponentType.MerchantServiceFee, Money(2_500m), Money(2_500m), FeeBeneficiary.Create("RANSYS").Value, false, 3).Value],
+        [FeeComponent.Create(FeeComponentType.MerchantServiceFee, Money(2_500m), Money(2_500m), FeeBeneficiary.Create("RANSYS").Value, FeeRefundPolicy.ProRata, 3).Value],
         Idr).Value;
 
     private Transaction NewPayment(bool withCanonicalDetail = false, Money? amount = null)

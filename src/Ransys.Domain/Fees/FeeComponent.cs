@@ -14,6 +14,22 @@ public enum FeeComponentType
     Other,
 }
 
+/// <summary>
+/// How much of a component's charged amount a refund returns (ADR-014). Captured on the original transaction;
+/// never taken from current fee configuration.
+/// </summary>
+public enum FeeRefundPolicy
+{
+    /// <summary>Default: never refunded.</summary>
+    None,
+
+    /// <summary>Refunded in proportion to the refunded principal (cumulative, truncated to the currency scale).</summary>
+    ProRata,
+
+    /// <summary>Refunded in full with the refund that completes the principal refund; nothing before that.</summary>
+    Full,
+}
+
 /// <summary>Who receives a fee component (e.g. RANSYS, PROVIDER, TAX_AUTHORITY).</summary>
 public sealed record FeeBeneficiary
 {
@@ -60,14 +76,14 @@ public sealed record FeeComponent
         Money chargedAmount,
         Money accountingAmount,
         FeeBeneficiary beneficiary,
-        bool refundable,
+        FeeRefundPolicy refundPolicy,
         long? calculationRuleVersion)
     {
         ComponentType = componentType;
         ChargedAmount = chargedAmount;
         AccountingAmount = accountingAmount;
         Beneficiary = beneficiary;
-        Refundable = refundable;
+        RefundPolicy = refundPolicy;
         CalculationRuleVersion = calculationRuleVersion;
     }
 
@@ -79,7 +95,11 @@ public sealed record FeeComponent
 
     public FeeBeneficiary Beneficiary { get; }
 
-    public bool Refundable { get; }
+    /// <summary>ADR-014. Defaults to <see cref="FeeRefundPolicy.None"/>.</summary>
+    public FeeRefundPolicy RefundPolicy { get; }
+
+    /// <summary>Compatibility view of <c>transaction_fee_components.refundable</c>.</summary>
+    public bool Refundable => RefundPolicy != FeeRefundPolicy.None;
 
     /// <summary>Fee rule version captured at reservation; finalization never recalculates (Ledger Matrix §48–49).</summary>
     public long? CalculationRuleVersion { get; }
@@ -89,7 +109,7 @@ public sealed record FeeComponent
         Money chargedAmount,
         Money accountingAmount,
         FeeBeneficiary beneficiary,
-        bool refundable,
+        FeeRefundPolicy refundPolicy,
         long? calculationRuleVersion)
     {
         ArgumentNullException.ThrowIfNull(chargedAmount);
@@ -99,6 +119,11 @@ public sealed record FeeComponent
         if (!Enum.IsDefined(componentType))
         {
             return RansysError.Validation(ErrorCodes.OutOfRange, "Unknown fee component type.", "fee.componentType");
+        }
+
+        if (!Enum.IsDefined(refundPolicy))
+        {
+            return RansysError.Validation(ErrorCodes.OutOfRange, "Unknown fee refund policy.", "fee.refundPolicy");
         }
 
         if (!chargedAmount.HasSameCurrency(accountingAmount))
@@ -113,6 +138,6 @@ public sealed record FeeComponent
                 ErrorCodes.OutOfRange, "Calculation rule version must be positive when present.", "fee.calculationRuleVersion");
         }
 
-        return new FeeComponent(componentType, chargedAmount, accountingAmount, beneficiary, refundable, calculationRuleVersion);
+        return new FeeComponent(componentType, chargedAmount, accountingAmount, beneficiary, refundPolicy, calculationRuleVersion);
     }
 }

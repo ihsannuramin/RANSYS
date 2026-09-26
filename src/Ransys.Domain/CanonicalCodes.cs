@@ -161,6 +161,12 @@ public static class CanonicalCodes
         (Routing.CircuitState.Open, "OPEN"),
         (Routing.CircuitState.HalfOpen, "HALF_OPEN"));
 
+    /// <summary>ADR-014 (<c>transaction_fee_components.refund_policy</c>, migration 0005).</summary>
+    public static readonly CodeMap<FeeRefundPolicy> FeeRefundPolicy = new(
+        (Fees.FeeRefundPolicy.None, "NONE"),
+        (Fees.FeeRefundPolicy.ProRata, "PRO_RATA"),
+        (Fees.FeeRefundPolicy.Full, "FULL"));
+
     public static readonly CodeMap<FeeComponentType> FeeComponentType = new(
         (Fees.FeeComponentType.MerchantServiceFee, "MERCHANT_SERVICE_FEE"),
         (Fees.FeeComponentType.ProviderFee, "PROVIDER_FEE"),

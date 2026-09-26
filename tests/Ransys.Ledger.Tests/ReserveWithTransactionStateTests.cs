@@ -89,7 +89,7 @@ public sealed class ReserveWithTransactionStateTests(PostgresDatabaseFixture db)
             TransactionType.Payment, merchant, channel, product, Rp(amount), null, null, null,
             TransactionReferences.Create(reference).Value, ExtensionMetadata.Empty, T0)).Value;
         var fees = FeeComponents.Create(
-            [FeeComponent.Create(FeeComponentType.MerchantServiceFee, Rp(2_500m), Rp(2_500m), FeeBeneficiary.Create("RANSYS").Value, false, 1).Value],
+            [FeeComponent.Create(FeeComponentType.MerchantServiceFee, Rp(2_500m), Rp(2_500m), FeeBeneficiary.Create("RANSYS").Value, FeeRefundPolicy.None, 1).Value],
             Idr).Value;
         transaction.Validate(fees, TransactionConfigurationSnapshot.None, Ctx("VALIDATION_OK"));
 

@@ -11,7 +11,7 @@ public sealed class MigrationTests(PostgresDatabaseFixture db)
     public void All_scripts_were_applied_on_a_fresh_database_in_order()
     {
         Assert.Equal(DatabaseMigrator.ScriptNames, db.ScriptsAppliedAtStartup);
-        Assert.Equal(4, DatabaseMigrator.ScriptNames.Count);
+        Assert.Equal(5, DatabaseMigrator.ScriptNames.Count);
     }
 
     [Fact]
@@ -70,6 +70,7 @@ public sealed class MigrationTests(PostgresDatabaseFixture db)
     [InlineData("transactions", "routing_decided_at")]
     [InlineData("transactions", "canonical_detail")]
     [InlineData("transaction_attempts", "outcome_recorded_at")] // ADR-005
+    [InlineData("transaction_fee_components", "refund_policy")] // ADR-014
     public async Task Expand_migration_columns_exist(string table, string column)
     {
         await using var connection = await db.DataSource.OpenConnectionAsync();

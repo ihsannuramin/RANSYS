@@ -15,7 +15,7 @@ internal static class TransactionBuilder
     public static RoutingDecision InitialRouting { get; } = RoutingDecision.Initial(ProviderRefA, 1, T0).Value;
 
     public static FeeComponents Fee2500 { get; } = FeeComponents.Create(
-        [FeeComponent.Create(FeeComponentType.MerchantServiceFee, Rp(2_500m), Rp(2_500m), FeeBeneficiary.Create("RANSYS").Value, false, 1).Value],
+        [FeeComponent.Create(FeeComponentType.MerchantServiceFee, Rp(2_500m), Rp(2_500m), FeeBeneficiary.Create("RANSYS").Value, FeeRefundPolicy.None, 1).Value],
         Idr).Value;
 
     public static Transaction NewPayment(decimal amount = 100_000m) => New(TransactionType.Payment, Rp(amount));

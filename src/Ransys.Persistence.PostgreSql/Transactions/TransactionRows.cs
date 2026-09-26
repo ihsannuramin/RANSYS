@@ -109,5 +109,7 @@ internal sealed class FeeComponentRow
 
     public bool Refundable { get; init; }
 
+    public string RefundPolicy { get; init; } = "NONE";
+
     public long? CalculationRuleVersion { get; init; }
 }

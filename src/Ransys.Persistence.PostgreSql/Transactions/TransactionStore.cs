@@ -111,10 +111,10 @@ public sealed class TransactionStore : ITransactionRepository
     private const string InsertFeeSql = """
         INSERT INTO core.transaction_fee_components (
             fee_component_id, ransys_transaction_id, component_type, charged_amount, accounting_amount,
-            currency_definition_id, beneficiary_type, beneficiary_id, refundable, calculation_rule_version, created_at)
+            currency_definition_id, beneficiary_type, beneficiary_id, refundable, refund_policy, calculation_rule_version, created_at)
         VALUES (
             @FeeComponentId, @TransactionId, @ComponentType, @ChargedAmount, @AccountingAmount,
-            @CurrencyDefinitionId, @BeneficiaryType, @BeneficiaryId, @Refundable, @CalculationRuleVersion, @CreatedAt)
+            @CurrencyDefinitionId, @BeneficiaryType, @BeneficiaryId, @Refundable, @RefundPolicy, @CalculationRuleVersion, @CreatedAt)
         """;
 
     private const string InsertHistorySql = """
@@ -128,7 +128,7 @@ public sealed class TransactionStore : ITransactionRepository
 
     private const string SelectFeesSql = """
         SELECT component_type, charged_amount, accounting_amount, beneficiary_type, beneficiary_id,
-               refundable, calculation_rule_version
+               refundable, refund_policy, calculation_rule_version
         FROM core.transaction_fee_components
         WHERE ransys_transaction_id = @Id
         ORDER BY created_at, fee_component_id
@@ -316,6 +316,7 @@ public sealed class TransactionStore : ITransactionRepository
             BeneficiaryType = f.Beneficiary.Type,
             BeneficiaryId = f.Beneficiary.Id,
             f.Refundable,
+            RefundPolicy = CanonicalCodes.FeeRefundPolicy.ToCode(f.RefundPolicy),
             f.CalculationRuleVersion,
             CreatedAt = DbValues.ToDb(transaction.ValidatedAt!.Value),
         });
@@ -472,9 +473,10 @@ internal static class TransactionRowMapper
         var components = new List<FeeComponent>();
         foreach (var row in rows)
         {
-            if (!CanonicalCodes.FeeComponentType.TryParse(row.ComponentType, out var type))
+            if (!CanonicalCodes.FeeComponentType.TryParse(row.ComponentType, out var type)
+                || !CanonicalCodes.FeeRefundPolicy.TryParse(row.RefundPolicy, out var refundPolicy))
             {
-                return RansysError.Validation(ErrorCodes.OutOfRange, $"Unknown fee component type '{row.ComponentType}'.", "fees");
+                return RansysError.Validation(ErrorCodes.OutOfRange, $"Unknown fee component type '{row.ComponentType}' or refund policy '{row.RefundPolicy}'.", "fees");
             }
 
             var charged = Money.Create(row.ChargedAmount, currency);
@@ -485,7 +487,7 @@ internal static class TransactionRowMapper
                 return charged.IsFailure ? charged.Error : accounting.IsFailure ? accounting.Error : beneficiary.Error;
             }
 
-            var component = FeeComponent.Create(type, charged.Value, accounting.Value, beneficiary.Value, row.Refundable, row.CalculationRuleVersion);
+            var component = FeeComponent.Create(type, charged.Value, accounting.Value, beneficiary.Value, refundPolicy, row.CalculationRuleVersion);
             if (component.IsFailure)
             {
                 return component.Error;
