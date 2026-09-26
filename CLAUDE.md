@@ -41,6 +41,7 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 
 - Balances change **only** through `ILedgerPostingService` (`src/Ransys.Ledger`). It runs inside the caller's `IDatabaseSession`, so the caller can also update the Transaction aggregate and commit once. Pure rules live in `src/Ransys.Domain/Ledger`: `PostingKey` (ADR-001), `LedgerAccounts` (ADR-007, currency rendered `IDR-V1`), a balanced `Journal`, the `Wallet` projection and the `Reservation` lifecycle.
 - Every operation follows lock order: caller locks the transaction row → service locks the wallet (`FOR UPDATE`) → the reservation → checks the posting key. A repeated key with the same terms returns `LedgerPostingOutcome.AlreadyPosted`; different terms return `POSTING_KEY_CONFLICT`. No network I/O inside the session.
+- Wallet status (ADR-016): FROZEN blocks only new consumption (reserve, debit adjustment); CLOSED is terminal. Change status only through `WalletStatusService`, which re-checks close preconditions under the wallet lock and emits `WALLET_STATUS_CHANGED`.
 - Refunds and adjustments require an approval request id (maker-checker). Total refunds can never exceed the posted amount. Debit adjustments can never make a balance negative.
 - `PostgresLedgerStore` only inserts journals and never updates them (ADR-002). Ledger DB tests (`tests/Ransys.Ledger.Tests`) assert that the wallet projection equals the projection rebuilt from ledger entries. Keep that check in new scenarios.
 

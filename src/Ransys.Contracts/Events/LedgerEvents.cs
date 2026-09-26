@@ -12,6 +12,7 @@ public static class LedgerEventTypes
     public const string RefundPosted = "REFUND_POSTED";
     public const string TopUpPosted = "TOPUP_POSTED";
     public const string AdjustmentPosted = "ADJUSTMENT_POSTED";
+    public const string WalletStatusChanged = "WALLET_STATUS_CHANGED";
 }
 
 /// <summary>
@@ -32,6 +33,24 @@ public sealed record LedgerPostingEventV1(
     decimal AvailableBalanceAfter,
     decimal ReservedBalanceAfter,
     decimal LedgerBalanceAfter,
+    DateTimeOffset OccurredAt)
+{
+    public const int Version = 1;
+}
+
+/// <summary>
+/// Wallet status change (ADR-016), including who changed it and why, for the Backoffice audit trail.
+/// PLACEHOLDER – subject to the Event Contract design.
+/// </summary>
+public sealed record WalletStatusChangedV1(
+    Guid WalletId,
+    Guid MerchantId,
+    string PreviousStatus,
+    string NewStatus,
+    string Reason,
+    string ActorType,
+    Guid? ActorId,
+    Guid? ApprovalRequestId,
     DateTimeOffset OccurredAt)
 {
     public const int Version = 1;

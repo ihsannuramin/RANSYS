@@ -154,6 +154,12 @@ public interface ILedgerStore
     /// <summary>Inserts the journal and its entries, creating missing accounts idempotently.</summary>
     Task<Result> InsertJournalAsync(IDatabaseSession session, Journal journal, CancellationToken cancellationToken);
 
-    /// <summary>Writes the wallet projection; the row is already locked by <see cref="LockWalletAsync"/>.</summary>
+    /// <summary>Writes the wallet projection and status; the row is already locked by <see cref="LockWalletAsync"/>.</summary>
     Task UpdateWalletAsync(IDatabaseSession session, Wallet wallet, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// True if the wallet has an ACTIVE reservation, or a transaction (or a child of one) reserved on it that is not
+    /// financially resolved yet (ADR-016 close precondition).
+    /// </summary>
+    Task<bool> HasUnresolvedFinancialActivityAsync(IDatabaseSession session, WalletId walletId, CancellationToken cancellationToken);
 }

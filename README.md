@@ -107,11 +107,11 @@ Decided on 2026-09-27, implementation pending:
 
 - ADR-012: reversal as a child transaction; the original's processing state is not overwritten (interim reject/no-mutation behavior remains until the refactor lands; supersedes ADR-003).
 - ADR-014: refund fee policy per original fee component (`NONE` default, `PRO_RATA`, `FULL`), never recalculated from current configuration.
-- ADR-016: wallet status semantics (FROZEN blocks new consumption only; CLOSED is terminal with preconditions); freeze/unfreeze/close operations.
 
 
 Decided and implemented:
 
+- ADR-016: wallet status semantics and `WalletStatusService` freeze/unfreeze/close (maker-checker requirement for status changes not specified; approval reference carried when supplied).
 - ADR-017: `supports_transfer` / `supports_void` official; VOID never mapped to reversal/refund.
 
 Decided, no Phase 1 code change needed:

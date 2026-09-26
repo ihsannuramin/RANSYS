@@ -331,7 +331,7 @@ public sealed class PostgresLedgerStore : ILedgerStore
             """
             UPDATE ledger.wallets
             SET ledger_balance = @Ledger, available_balance = @Available, reserved_balance = @Reserved,
-                version_no = version_no + 1, updated_at = now()
+                status = @Status, version_no = version_no + 1, updated_at = now()
             WHERE wallet_id = @Id AND version_no = @VersionNo
             """,
             new
@@ -340,12 +340,34 @@ public sealed class PostgresLedgerStore : ILedgerStore
                 Ledger = wallet.LedgerBalance.Amount,
                 Available = wallet.AvailableBalance.Amount,
                 Reserved = wallet.ReservedBalance.Amount,
+                Status = CanonicalCodes.WalletStatus.ToCode(wallet.Status),
                 wallet.VersionNo,
             },
             s.Transaction, cancellationToken: cancellationToken));
 
         // The row is locked FOR UPDATE by this session, so a mismatch means the lock order was violated.
         EnsureOneRow(affected, $"wallet {wallet.Id}");
+    }
+
+    public async Task<bool> HasUnresolvedFinancialActivityAsync(
+        IDatabaseSession session, WalletId walletId, CancellationToken cancellationToken)
+    {
+        var s = Pg(session);
+        return await s.Connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+            """
+            WITH wallet_transactions AS (
+                SELECT ransys_transaction_id FROM ledger.balance_reservations WHERE wallet_id = @WalletId)
+            SELECT EXISTS (
+                SELECT 1 FROM ledger.balance_reservations WHERE wallet_id = @WalletId AND status = 'ACTIVE')
+            OR EXISTS (
+                SELECT 1 FROM core.transactions t
+                WHERE (t.ransys_transaction_id IN (SELECT ransys_transaction_id FROM wallet_transactions)
+                       OR t.original_transaction_id IN (SELECT ransys_transaction_id FROM wallet_transactions))
+                  AND (t.financial_status IN ('RESERVED', 'REVERSAL_PENDING', 'REFUND_PENDING')
+                       OR t.processing_status IN ('RECEIVED', 'VALIDATED', 'PROCESSING', 'PENDING', 'IN_DOUBT',
+                                                  'REVERSAL_PENDING', 'REFUND_PENDING')))
+            """,
+            new { WalletId = walletId.Value }, s.Transaction, cancellationToken: cancellationToken));
     }
 
     private static async Task<Guid> EnsureAccountAsync(

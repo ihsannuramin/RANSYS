@@ -46,7 +46,8 @@ public sealed class Wallet
 
     public Money ReservedBalance { get; private set; }
 
-    public WalletStatus Status { get; }
+    /// <summary>ADR-016: ACTIVE normal; FROZEN blocks new consumption only; CLOSED terminal.</summary>
+    public WalletStatus Status { get; private set; }
 
     /// <summary>Row version (<c>version_no</c>) of the loaded projection.</summary>
     public long VersionNo { get; }
@@ -105,7 +106,7 @@ public sealed class Wallet
         EnsureCurrency(amount);
         if (Status == WalletStatus.Closed)
         {
-            return NotActive("credit");
+            return Closed("credit");
         }
 
         var available = AvailableBalance.Add(amount);
@@ -134,10 +135,68 @@ public sealed class Wallet
         return Result.Success();
     }
 
-    // In-flight reservations must always be finalizable, so commit/release are allowed for any wallet status.
+    /// <summary>ADR-016: ACTIVE → FROZEN. Existing transactions can still be finalized. Idempotent.</summary>
+    public Result Freeze() => Status switch
+    {
+        WalletStatus.Closed => Closed("freeze"),
+        _ => SetStatus(WalletStatus.Frozen),
+    };
+
+    /// <summary>ADR-016: FROZEN → ACTIVE. Idempotent.</summary>
+    public Result Unfreeze() => Status switch
+    {
+        WalletStatus.Closed => Closed("unfreeze"),
+        _ => SetStatus(WalletStatus.Active),
+    };
+
+    /// <summary>
+    /// ADR-016: terminal close. Requires zero ledger, available and reserved balances, and no active reservation or
+    /// unresolved financial transaction (<paramref name="hasUnresolvedFinancialActivity"/>, determined by the caller
+    /// under the wallet lock). A CLOSED wallet can never be reopened.
+    /// </summary>
+    public Result Close(bool hasUnresolvedFinancialActivity)
+    {
+        if (Status == WalletStatus.Closed)
+        {
+            return Result.Success();
+        }
+
+        if (!LedgerBalance.IsZero || !AvailableBalance.IsZero || !ReservedBalance.IsZero)
+        {
+            return RansysError.Financial(
+                ErrorCodes.WalletNotEmpty,
+                $"Wallet {Id} cannot be closed: balances must be zero (ledger {LedgerBalance.ToCanonicalAmountString()}, reserved {ReservedBalance.ToCanonicalAmountString()}).");
+        }
+
+        if (hasUnresolvedFinancialActivity)
+        {
+            return RansysError.Financial(
+                ErrorCodes.WalletHasUnresolvedTransactions,
+                $"Wallet {Id} cannot be closed while it has an active reservation or an unresolved financial transaction.");
+        }
+
+        return SetStatus(WalletStatus.Closed);
+    }
+
+    private Result SetStatus(WalletStatus status)
+    {
+        Status = status;
+        return Result.Success();
+    }
+
+    private RansysError Closed(string operation) =>
+        RansysError.Financial(ErrorCodes.WalletClosed, $"Wallet {Id} is CLOSED (terminal); {operation} is not allowed.");
+
+    // ADR-016: existing reservations stay finalizable while FROZEN. A CLOSED wallet has none by construction
+    // (close preconditions), so any attempt there is rejected.
     private Result MoveOutOfReserved(Money total, bool toAvailable)
     {
         EnsureCurrency(total);
+        if (Status == WalletStatus.Closed)
+        {
+            return Closed("finalizing a reservation");
+        }
+
         var reserved = ReservedBalance.Subtract(total);
         if (reserved.IsFailure)
         {
@@ -161,14 +220,19 @@ public sealed class Wallet
 
     /// <summary>
     /// New debits and reservations need an ACTIVE wallet and enough available balance.
-    /// TODO / Architecture Decision Required: FROZEN/CLOSED semantics beyond "no new debits" are not specified.
+    /// ADR-016: FROZEN blocks new financial consumption (reservations, debit adjustments); CLOSED blocks everything.
     /// </summary>
     private Result EnsureCanDebit(Money amount)
     {
         EnsureCurrency(amount);
+        if (Status == WalletStatus.Closed)
+        {
+            return Closed("debit");
+        }
+
         if (Status != WalletStatus.Active)
         {
-            return NotActive("debit");
+            return NotActive("new financial consumption");
         }
 
         return AvailableBalance.IsGreaterThanOrEqualTo(amount)

@@ -46,6 +46,9 @@ public static class ErrorCodes
     public const string InsufficientBalance = "INSUFFICIENT_BALANCE";
     public const string WalletNotFound = "WALLET_NOT_FOUND";
     public const string WalletNotActive = "WALLET_NOT_ACTIVE";
+    public const string WalletClosed = "WALLET_CLOSED";
+    public const string WalletNotEmpty = "WALLET_NOT_EMPTY";
+    public const string WalletHasUnresolvedTransactions = "WALLET_HAS_UNRESOLVED_TRANSACTIONS";
     public const string ReservationNotFound = "RESERVATION_NOT_FOUND";
     public const string ReservationNotActive = "RESERVATION_NOT_ACTIVE";
     public const string ReservationAlreadyExists = "RESERVATION_ALREADY_EXISTS";
