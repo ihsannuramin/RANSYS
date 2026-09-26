@@ -76,6 +76,7 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 | 8 Transactional outbox | Done |
 | 9 Routing foundation | Done |
 | 10 Concurrency scenarios | Done |
+| 12c Core provider gateway + callback sink (`TransactionCore/Providers`) | Done |
 
 ## Phase 1 Definition of Done (main.md §28)
 
@@ -101,7 +102,7 @@ Cross-component concurrency (main.md §22) is covered by `tests/Ransys.Integrati
 
 ## Architecture decisions
 
-All decisions are recorded in [`docs/decisions/`](docs/decisions/) (ADR-001 … ADR-019, ADR-023).
+All decisions are recorded in [`docs/decisions/`](docs/decisions/) (ADR-001 … ADR-019, ADR-023, ADR-024).
 
 
 Decided and implemented:
@@ -112,7 +113,8 @@ Decided and implemented:
 - ADR-017: TRANSFER / VOID capabilities official; VOID never mapped to reversal/refund.
 - ADR-018: capability codes are the Provider Adapter Contract v1 catalog (`PAYMENT`, `BALANCE_CHECK`, `VOID`, …); migration `0007` renames the old `supports_*` rows and adds transport status `PROTOCOL_ERROR` (never proves not-sent).
 - ADR-019 (interim): VOID is a child transaction; `Transaction.RecordVoidConfirmed` only sets the original's reconciliation to EXCEPTION (`VOID_CONFIRMED_REQUIRES_REVIEW`). VOID financial semantics are still open.
-- ADR-023 (proposed, domain implemented): a refund child completes the original directly (`AuthorizeRefund`, `ApplyRefundCompleted`: SUCCESS → PARTIALLY_REFUNDED / REFUNDED, no REFUND_PENDING). The refund use case is not built yet.
+- ADR-023 (proposed): a refund child completes the original directly (`AuthorizeRefund`, `ApplyRefundCompleted`: SUCCESS → PARTIALLY_REFUNDED / REFUNDED, no REFUND_PENDING). `TransactionFinalizationService` posts the refund (fee via `RefundFeeCalculator`, cumulative over earlier successful refund children) and completes the original in the same DB transaction.
+- ADR-024 (proposed): `RefundAuthorization` distinguishes a manual refund (maker-checker `ApprovedRequest`) from a merchant API refund bound to its own REFUND child (`MerchantApiRequest`, no approval id).
 
 Decided, no Phase 1 code change needed:
 

@@ -6,6 +6,8 @@
     <ProjectReference Include="../Ransys.Ledger/Ransys.Ledger.csproj" />
     <ProjectReference Include="../Ransys.Routing/Ransys.Routing.csproj" />
     <ProjectReference Include="../Ransys.Configuration/Ransys.Configuration.csproj" />
+    <!-- M12c: the provider gateway calls adapters through the semantic contract only (never Adapter.Sdk). -->
+    <ProjectReference Include="../Ransys.Adapter.Contracts/Ransys.Adapter.Contracts.csproj" />
   </ItemGroup>
 
 </Project>

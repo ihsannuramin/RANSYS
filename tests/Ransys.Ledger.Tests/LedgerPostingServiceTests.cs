@@ -251,6 +251,33 @@ public sealed class LedgerPostingServiceTests(PostgresDatabaseFixture db)
     }
 
     [Fact]
+    public async Task Merchant_api_refund_is_authorized_only_by_its_own_refund_child()
+    {
+        // ADR-024: no maker-checker approval, but the authorization must be bound to the refund child transaction.
+        var wallet = await _h.NewFundedWallet(1_000_000m);
+        var tx = await _h.NewTransaction();
+        var child = await _h.NewTransaction();
+        await _h.Reserve(tx, wallet, 100_000m, fee: 2_500m);
+        await _h.Post(tx);
+
+        Task<Result<LedgerPostingResult>> Refund(TransactionId? refundTransaction, RefundAuthorization authorization) =>
+            _h.InSession(s => _h.Service.PostRefundAsync(s, new RefundRequest(
+                tx, refundTransaction, $"RF-{Guid.NewGuid():N}", _h.ProviderA, Rp(10_000m), Rp(0m), authorization, LedgerActor.System)));
+
+        var bound = new RefundAuthorization.MerchantApiRequest(child, new ChannelId(Guid.CreateVersion7()), "REF-1");
+        Assert.Equal(ErrorCodes.ApprovalRequired, (await Refund(null, bound)).Error.Code);
+        Assert.Equal(ErrorCodes.ApprovalRequired, (await Refund(await _h.NewTransaction(), bound)).Error.Code);
+        Assert.Equal(ErrorCodes.ApprovalRequired, (await Refund(tx, new RefundAuthorization.MerchantApiRequest(tx, bound.ChannelId, "REF-1"))).Error.Code);
+        Assert.Equal(ErrorCodes.ApprovalRequired, (await Refund(child, new RefundAuthorization.ApprovedRequest(Guid.Empty))).Error.Code);
+
+        var posted = await Refund(child, bound);
+
+        Assert.Equal(LedgerPostingOutcome.Posted, posted.Value.Outcome);
+        Assert.Equal((907_500m, 907_500m, 0m), await _h.Balances(wallet));
+        await AssertProjectionMatchesLedger(wallet);
+    }
+
+    [Fact]
     public async Task Manual_adjustments_require_approval_and_never_create_negative_balance()
     {
         var wallet = await _h.NewFundedWallet(40_000m);

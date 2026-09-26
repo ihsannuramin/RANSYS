@@ -81,6 +81,31 @@ public sealed record TopUpRequest(
     LedgerActor Actor);
 
 /// <summary>
+/// Who authorized a refund posting (ADR-024). Exactly one of two explicit forms; there is no "unauthorized" value.
+/// </summary>
+public abstract record RefundAuthorization
+{
+    private RefundAuthorization()
+    {
+    }
+
+    /// <summary>
+    /// Manual (Backoffice) refund: an approved maker-checker request (Architecture Spec §31). The approval id is
+    /// written to the journal.
+    /// </summary>
+    public sealed record ApprovedRequest(Guid ApprovalRequestId) : RefundAuthorization;
+
+    /// <summary>
+    /// Refund requested by an authenticated merchant through the API and executed as a REFUND child transaction that
+    /// the provider confirmed (ADR-023). It is bound to that child: <see cref="RefundRequest.RefundTransactionId"/>
+    /// must equal <see cref="RefundTransactionId"/>. The journal has no approval id; the evidence is the child
+    /// transaction (authenticated channel, client reference, attempts and history).
+    /// </summary>
+    public sealed record MerchantApiRequest(TransactionId RefundTransactionId, ChannelId ChannelId, string ClientReference)
+        : RefundAuthorization;
+}
+
+/// <summary>
 /// Refund of a posted payment. <see cref="Principal"/> debits the provider receivable and <see cref="Fee"/>
 /// reverses fee revenue; the fee-refund policy itself is decided by the refund use case (ADR-010).
 /// </summary>
@@ -91,8 +116,28 @@ public sealed record RefundRequest(
     ProviderId ProviderId,
     Money Principal,
     Money Fee,
-    Guid ApprovalRequestId,
-    LedgerActor Actor);
+    RefundAuthorization Authorization,
+    LedgerActor Actor)
+{
+    /// <summary>Manual refund with a maker-checker approval (<see cref="RefundAuthorization.ApprovedRequest"/>).</summary>
+    public RefundRequest(
+        TransactionId originalTransactionId,
+        TransactionId? refundTransactionId,
+        string refundReference,
+        ProviderId providerId,
+        Money principal,
+        Money fee,
+        Guid approvalRequestId,
+        LedgerActor actor)
+        : this(
+            originalTransactionId, refundTransactionId, refundReference, providerId, principal, fee,
+            new RefundAuthorization.ApprovedRequest(approvalRequestId), actor)
+    {
+    }
+
+    /// <summary>The maker-checker approval id; null for a merchant API refund (ADR-024).</summary>
+    public Guid? ApprovalRequestId => (Authorization as RefundAuthorization.ApprovedRequest)?.ApprovalRequestId;
+}
 
 /// <summary>Manual adjustment; requires reason, evidence and an approved maker-checker request (OP-13/14, §43).</summary>
 public sealed record AdjustmentRequest(

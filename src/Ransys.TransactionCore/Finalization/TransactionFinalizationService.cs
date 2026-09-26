@@ -3,6 +3,8 @@ using Ransys.Contracts.Events;
 using Ransys.Domain;
 using Ransys.Domain.Attempts;
 using Ransys.Domain.Common;
+using Ransys.Domain.Fees;
+using Ransys.Domain.Monetary;
 using Ransys.Domain.Transactions;
 using Ransys.Ledger;
 
@@ -88,7 +90,7 @@ public sealed class TransactionFinalizationService
             return context.Error;
         }
 
-        // Lock order: a reversal child's original (parent) is locked before the child itself (ADR-012).
+        // Lock order: a child's original (parent) is locked before the child itself (ADR-012, ADR-023, ADR-019).
         var peek = await _transactions.GetAsync(session, command.TransactionId, forUpdate: false, cancellationToken);
         if (peek.IsFailure)
         {
@@ -101,7 +103,7 @@ public sealed class TransactionFinalizationService
         }
 
         Transaction? original = null;
-        if (peek.Value is { Type: TransactionType.Reversal, Identity.OriginalTransactionId: { } originalId })
+        if (peek.Value is { Type: TransactionType.Reversal or TransactionType.Refund or TransactionType.Void, Identity.OriginalTransactionId: { } originalId })
         {
             var parent = await _transactions.GetAsync(session, originalId, forUpdate: true, cancellationToken);
             if (parent.IsFailure)
@@ -110,7 +112,7 @@ public sealed class TransactionFinalizationService
             }
 
             original = parent.Value
-                ?? throw new InvalidOperationException($"Reversal {command.TransactionId} references missing original {originalId}.");
+                ?? throw new InvalidOperationException($"Child {command.TransactionId} references missing original {originalId}.");
         }
 
         var loaded = await _transactions.GetAsync(session, command.TransactionId, forUpdate: true, cancellationToken);
@@ -159,10 +161,15 @@ public sealed class TransactionFinalizationService
 
         if (original is not null && outcome.Kind == TransitionKind.Applied && transaction.ProcessingStatus == ProcessingStatus.Success)
         {
-            var reversed = await ApplyReversalToOriginalAsync(session, original, transaction, command, context.Value, cancellationToken);
-            if (reversed.IsFailure)
+            var applied = transaction.Type switch
             {
-                return reversed.Error;
+                TransactionType.Reversal => await ApplyReversalToOriginalAsync(session, original, transaction, command, context.Value, cancellationToken),
+                TransactionType.Refund => await ApplyRefundToOriginalAsync(session, original, transaction, command, context.Value, cancellationToken),
+                _ => await ApplyVoidToOriginalAsync(session, original, transaction, command, context.Value, cancellationToken),
+            };
+            if (applied.IsFailure)
+            {
+                return applied.Error;
             }
         }
 
@@ -195,6 +202,117 @@ public sealed class TransactionFinalizationService
         if (ledger.IsFailure)
         {
             return ledger.Error;
+        }
+
+        var saved = await _transactions.UpdateAsync(session, original, cancellationToken);
+        if (saved.IsFailure)
+        {
+            return saved.Error;
+        }
+
+        await EnqueueStatusEventAsync(session, original, previous, outcome.Value, command.Source, cancellationToken);
+        return Result.Success();
+    }
+
+    /// <summary>
+    /// ADR-023: the refund child succeeded. In the same database transaction: post the refund (principal = child amount,
+    /// fee from <see cref="RefundFeeCalculator"/> over the original's captured fee components and the principal already
+    /// refunded by earlier successful refund children), then move the original to PARTIALLY_REFUNDED or REFUNDED.
+    /// The refund is booked against the provider that actually processed the original. A merchant API refund is
+    /// authorized by its own child transaction, not by maker-checker (ADR-024).
+    /// </summary>
+    private async Task<Result> ApplyRefundToOriginalAsync(
+        IDatabaseSession session, Transaction original, Transaction refund, ProviderResultCommand command, TransitionContext childContext, CancellationToken cancellationToken)
+    {
+        if (original.Routing is not { } routing || original.Fees is not { } fees)
+        {
+            return RansysError.Validation(
+                ErrorCodes.InvalidStateTransition, $"Original {original.Id} of refund {refund.Id} was never routed or validated.");
+        }
+
+        if (refund.Amount.Currency != original.Amount.Currency)
+        {
+            return RansysError.Validation(ErrorCodes.CurrencyMismatch, $"Refund {refund.Id} does not use the original's currency definition.", "amount");
+        }
+
+        // Successful refund children are exactly the refunds already posted: each one posts in the same database
+        // transaction as its success, serialized by the original's row lock held here.
+        var siblings = await _transactions.FindChildSummariesAsync(session, original.Id, TransactionType.Refund, cancellationToken);
+        var before = siblings.Where(c => c.Id != refund.Id && c.Status == ProcessingStatus.Success).Sum(c => c.Amount);
+        var refundedBefore = Money.Create(before, original.Amount.Currency);
+        if (refundedBefore.IsFailure)
+        {
+            return refundedBefore.Error;
+        }
+
+        var amounts = RefundFeeCalculator.Calculate(original.Amount, fees, refundedBefore.Value, refund.Amount);
+        if (amounts.IsFailure)
+        {
+            return amounts.Error;
+        }
+
+        var posted = await _ledger.PostRefundAsync(
+            session,
+            new RefundRequest(
+                original.Id,
+                refund.Id,
+                refund.Id.ToString(),
+                routing.CurrentProvider.ProviderId,
+                amounts.Value.Principal,
+                amounts.Value.Fee,
+                new RefundAuthorization.MerchantApiRequest(refund.Id, refund.ChannelId, refund.Identity.ClientReference),
+                Domain.Ledger.LedgerActor.System),
+            cancellationToken);
+        if (posted.IsFailure)
+        {
+            return posted.Error;
+        }
+
+        var fullyRefunded = before + refund.Amount.Amount == original.Amount.Amount;
+        var context = TransitionContext.Create(
+            fullyRefunded ? "REFUND_COMPLETED" : "PARTIAL_REFUND_COMPLETED", command.Source, childContext.OccurredAt,
+            $"Refund {refund.Id} confirmed", command.AttemptId);
+        var previous = original.ProcessingStatus;
+        var outcome = original.ApplyRefundCompleted(refund.Id, fullyRefunded, context.Value);
+        if (outcome.IsFailure)
+        {
+            return outcome.Error;
+        }
+
+        if (outcome.Value.Kind == TransitionKind.NoChange)
+        {
+            return Result.Success();
+        }
+
+        var saved = await _transactions.UpdateAsync(session, original, cancellationToken);
+        if (saved.IsFailure)
+        {
+            return saved.Error;
+        }
+
+        await EnqueueStatusEventAsync(session, original, previous, outcome.Value, command.Source, cancellationToken);
+        return Result.Success();
+    }
+
+    /// <summary>
+    /// ADR-019 (fail closed): the VOID child succeeded. No money moves; the original's reconciliation becomes EXCEPTION
+    /// for manual handling. Never mapped to a reversal or refund.
+    /// </summary>
+    private async Task<Result> ApplyVoidToOriginalAsync(
+        IDatabaseSession session, Transaction original, Transaction voidChild, ProviderResultCommand command, TransitionContext childContext, CancellationToken cancellationToken)
+    {
+        var context = TransitionContext.Create(
+            ReasonCodes.VoidConfirmedRequiresReview, command.Source, childContext.OccurredAt, $"VOID {voidChild.Id} confirmed", command.AttemptId);
+        var previous = original.ProcessingStatus;
+        var outcome = original.RecordVoidConfirmed(voidChild.Id, context.Value);
+        if (outcome.IsFailure)
+        {
+            return outcome.Error;
+        }
+
+        if (outcome.Value.Changes.Count == 0)
+        {
+            return Result.Success();
         }
 
         var saved = await _transactions.UpdateAsync(session, original, cancellationToken);
@@ -256,6 +374,7 @@ public sealed class TransactionFinalizationService
                 ProcessingStatus.Failed => TransactionEventTypes.Failed,
                 ProcessingStatus.Pending => TransactionEventTypes.Pending,
                 ProcessingStatus.Reversed => TransactionEventTypes.Reversed,
+                ProcessingStatus.PartiallyRefunded or ProcessingStatus.Refunded => TransactionEventTypes.Refunded,
                 _ => TransactionEventTypes.InDoubt,
             };
 

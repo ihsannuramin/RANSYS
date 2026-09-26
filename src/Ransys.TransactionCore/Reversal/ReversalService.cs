@@ -14,7 +14,9 @@ public sealed record StartReversalCommand(
     string ClientReference,
     string? IdempotencyKey,
     string ReasonCode,
-    ChangeSource Source);
+    ChangeSource Source,
+    string? ReasonDescription = null,
+    ExtensionMetadata? Metadata = null);
 
 public sealed record ReversalStarted(TransactionId ReversalTransactionId, IdempotencyOutcome Outcome);
 
@@ -123,14 +125,14 @@ public sealed class ReversalService(
 
         var created = Transaction.Create(new TransactionDraft(
             identity.Value, TransactionType.Reversal, original.MerchantId, original.ChannelId, original.ProductId,
-            original.Amount, null, null, null, references.Value, ExtensionMetadata.Empty, now));
+            original.Amount, null, null, null, references.Value, command.Metadata ?? ExtensionMetadata.Empty, now));
         if (created.IsFailure)
         {
             return created.Error;
         }
 
         var child = created.Value;
-        var context = TransitionContext.Create(command.ReasonCode, command.Source, now);
+        var context = TransitionContext.Create(command.ReasonCode, command.Source, now, command.ReasonDescription);
         if (context.IsFailure)
         {
             return context.Error;

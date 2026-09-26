@@ -18,6 +18,7 @@ using Ransys.Testing.PostgreSql;
 using Ransys.TransactionCore.Attempts;
 using Ransys.TransactionCore.Finalization;
 using Ransys.TransactionCore.Idempotency;
+using Ransys.TransactionCore.Providers;
 using Ransys.TransactionCore.Reversal;
 using Ransys.Persistence.PostgreSql.Idempotency;
 using Ransys.Persistence.PostgreSql.Routing;
@@ -46,7 +47,10 @@ internal sealed class CoreHarness
         Reversals = new ReversalService(
             Transactions, new IdempotencyService(new PostgresIdempotencyStore(), clock, ids), new PostgresRoutingStore(),
             new PostgresOutboxWriter(), clock, ids);
+        CallbackSink = new ProviderCallbackSink(new PostgresSessionFactory(db.DataSource), Transactions, Finalization, clock);
     }
+
+    public ProviderCallbackSink CallbackSink { get; }
 
     public ReversalService Reversals { get; }
 
@@ -74,12 +78,13 @@ internal sealed class CoreHarness
     public Task<PostgresSession> Session() => PostgresSession.BeginAsync(_db.DataSource);
 
     /// <summary>Payment of 100,000 + 2,500 fee, reserved on a funded wallet and PROCESSING on provider A (SD-01 up to the provider call).</summary>
-    public async Task<(TransactionId Transaction, WalletId Wallet)> ProcessingPayment(WalletId? sharedWallet = null, ProviderReference? provider = null)
+    public async Task<(TransactionId Transaction, WalletId Wallet)> ProcessingPayment(
+        WalletId? sharedWallet = null, ProviderReference? provider = null, FeeRefundPolicy feePolicy = FeeRefundPolicy.None)
     {
         var wallet = sharedWallet ?? await NewFundedWallet(1_000_000m);
         var routedTo = provider ?? ProviderA;
         var transaction = NewPayment(100_000m);
-        transaction.Validate(Fee2500(), TransactionConfigurationSnapshot.None, Ctx("VALIDATION_OK"));
+        transaction.Validate(Fee2500(feePolicy), TransactionConfigurationSnapshot.None, Ctx("VALIDATION_OK"));
 
         await using var session = await Session();
         Ok(await Transactions.InsertAsync(session, transaction));
@@ -89,6 +94,31 @@ internal sealed class CoreHarness
         Ok(await Transactions.UpdateAsync(session, transaction));
         await session.CommitAsync();
         return (transaction.Id, wallet);
+    }
+
+    /// <summary>
+    /// A REFUND / VOID child of <paramref name="original"/> in PROCESSING on the original's provider, inserted directly
+    /// (the processing service creates children through idempotency; this only reaches the state for finalization tests).
+    /// </summary>
+    public async Task<TransactionId> ProcessingChild(TransactionId original, TransactionType type, decimal? amount = null)
+    {
+        var parent = await Load(original);
+        var id = new TransactionId(Guid.CreateVersion7());
+        var reference = $"CH-{id.Value:N}";
+        var money = amount is { } a ? Rp(a) : parent.Amount;
+        var fingerprint = TransactionFingerprint.Compute(new FingerprintInput(
+            parent.MerchantId, parent.ChannelId, type, parent.ProductId, null, null, money, reference));
+        var child = Transaction.Create(new TransactionDraft(
+            TransactionIdentity.Create(id, reference, null, fingerprint, original).Value,
+            type, parent.MerchantId, parent.ChannelId, parent.ProductId, money, null, null, null,
+            TransactionReferences.Create(reference).Value, ExtensionMetadata.Empty, DateTimeOffset.UtcNow)).Value;
+        Ok(child.Validate(null, parent.Configuration, Ctx("VALIDATION_OK")));
+        Ok(child.BeginProcessing(RoutingDecision.Initial(parent.Routing!.CurrentProvider, 1, DateTimeOffset.UtcNow).Value, Ctx("PROVIDER_PROCESSING")));
+
+        await using var session = await Session();
+        Ok(await Transactions.InsertAsync(session, child));
+        await session.CommitAsync();
+        return id;
     }
 
     /// <summary>Gives a provider a capability (idempotent).</summary>
@@ -168,7 +198,7 @@ internal sealed class CoreHarness
             TransactionReferences.Create(reference).Value, ExtensionMetadata.Empty, DateTimeOffset.UtcNow)).Value;
     }
 
-    private static FeeComponents Fee2500() => FeeComponents.Create(
-        [FeeComponent.Create(FeeComponentType.MerchantServiceFee, Rp(2_500m), Rp(2_500m), FeeBeneficiary.Create("RANSYS").Value, FeeRefundPolicy.None, 1).Value],
+    private static FeeComponents Fee2500(FeeRefundPolicy policy = FeeRefundPolicy.None) => FeeComponents.Create(
+        [FeeComponent.Create(FeeComponentType.MerchantServiceFee, Rp(2_500m), Rp(2_500m), FeeBeneficiary.Create("RANSYS").Value, policy, 1).Value],
         Idr).Value;
 }

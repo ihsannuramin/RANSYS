@@ -14,6 +14,12 @@ public static class TransactionEventTypes
     public const string ReconExceptionCreated = "RECON_EXCEPTION_CREATED";
     public const string ReversalRequested = "REVERSAL_REQUESTED";
     public const string Reversed = "TRANSACTION_REVERSED";
+
+    /// <summary>Sequence Pack §23. ADR-023: emitted when a refund child moves the original to PARTIALLY_REFUNDED or REFUNDED.</summary>
+    public const string Refunded = "TRANSACTION_REFUNDED";
+
+    /// <summary>Sequence Pack §23: a REFUND child transaction was created for the original.</summary>
+    public const string RefundRequested = "REFUND_REQUESTED";
 }
 
 /// <summary>

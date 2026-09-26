@@ -93,6 +93,17 @@ public sealed class DependencyRulesTests
         Assert.DoesNotContain("Ransys.Persistence.PostgreSql", references);
     }
 
+    [Fact]
+    public void Transaction_core_calls_adapters_only_through_the_semantic_contract()
+    {
+        // M12c: the provider gateway depends on Adapter.Contracts (IProviderAdapter, V1 records). Transport bindings
+        // (Adapter.Sdk: gRPC client/server) are wired by the hosts, so Core stays independent of the wire protocol.
+        var references = ProjectReferences(LoadProject("Ransys.TransactionCore"));
+
+        Assert.Contains("Ransys.Adapter.Contracts", references);
+        Assert.DoesNotContain("Ransys.Adapter.Sdk", references);
+    }
+
     [Theory]
     [InlineData("Ransys.Adapter.Contracts")]
     [InlineData("Ransys.Adapter.Sdk")]

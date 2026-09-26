@@ -279,6 +279,23 @@ public sealed class TransactionStore : ITransactionRepository
         return rows.Select(r => (new TransactionId(r.Id), CanonicalCodes.ProcessingStatus.Parse(r.Status))).ToList();
     }
 
+    public async Task<IReadOnlyList<ChildTransactionSummary>> FindChildSummariesAsync(
+        IDatabaseSession databaseSession, TransactionId originalId, TransactionType type, CancellationToken cancellationToken = default)
+    {
+        var session = PostgresSessionCast.From(databaseSession);
+        var rows = await session.Connection.QueryAsync<(Guid Id, string Status, decimal Amount)>(new CommandDefinition(
+            """
+            SELECT ransys_transaction_id, processing_status, amount
+            FROM core.transactions
+            WHERE original_transaction_id = @OriginalId AND transaction_type = @Type
+            ORDER BY received_at, ransys_transaction_id
+            """,
+            new { OriginalId = originalId.Value, Type = CanonicalCodes.TransactionType.ToCode(type) },
+            session.Transaction, cancellationToken: cancellationToken));
+        return rows.Select(r => new ChildTransactionSummary(new TransactionId(r.Id), CanonicalCodes.ProcessingStatus.Parse(r.Status), r.Amount))
+            .ToList();
+    }
+
     Task<Result<Transaction?>> ITransactionRepository.GetAsync(
         IDatabaseSession session, TransactionId id, bool forUpdate, CancellationToken cancellationToken) =>
         GetAsync(session, id, forUpdate ? RowLock.ForUpdate : RowLock.None, cancellationToken);

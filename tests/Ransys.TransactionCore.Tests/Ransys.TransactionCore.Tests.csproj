@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/Ransys.TransactionCore/Ransys.TransactionCore.csproj" />
+    <ProjectReference Include="../Ransys.Testing.PostgreSql/Ransys.Testing.PostgreSql.csproj" />
   </ItemGroup>
 
 </Project>

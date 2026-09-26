@@ -324,9 +324,10 @@ public sealed class LedgerPostingService : ILedgerPostingService
         IDatabaseSession session, RefundRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (request.ApprovalRequestId == Guid.Empty)
+        var authorized = AuthorizeRefund(request);
+        if (authorized.IsFailure)
         {
-            return ApprovalRequired("Refund");
+            return authorized.Error;
         }
 
         var key = PostingKey.Refund(request.OriginalTransactionId, request.RefundReference);
@@ -627,6 +628,20 @@ public sealed class LedgerPostingService : ILedgerPostingService
 
     private static RansysError ReservationNotFound(TransactionId transactionId) =>
         RansysError.Financial(ErrorCodes.ReservationNotFound, $"Transaction {transactionId} has no reservation.");
+
+    /// <summary>
+    /// ADR-024: a refund needs either an approved maker-checker request (manual refund) or a merchant API refund bound
+    /// to its own REFUND child transaction. Anything else is rejected with APPROVAL_REQUIRED.
+    /// </summary>
+    private static Result AuthorizeRefund(RefundRequest request) => request.Authorization switch
+    {
+        RefundAuthorization.ApprovedRequest { ApprovalRequestId: var id } when id != Guid.Empty => Result.Success(),
+        RefundAuthorization.MerchantApiRequest merchant
+            when request.RefundTransactionId == merchant.RefundTransactionId
+                && merchant.RefundTransactionId != request.OriginalTransactionId
+                && !string.IsNullOrWhiteSpace(merchant.ClientReference) => Result.Success(),
+        _ => ApprovalRequired("Refund"),
+    };
 
     private static RansysError ApprovalRequired(string operation) =>
         new(ErrorCodes.ApprovalRequired, ErrorCategory.Authorization,
