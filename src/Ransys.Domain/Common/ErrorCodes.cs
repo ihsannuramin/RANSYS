@@ -35,6 +35,22 @@ public static class ErrorCodes
     public const string AttemptOutcomeAlreadyRecorded = "ATTEMPT_OUTCOME_ALREADY_RECORDED";
 
     public const string InvalidStateTransition = "INVALID_STATE_TRANSITION";
+    public const string InsufficientBalance = "INSUFFICIENT_BALANCE";
+    public const string WalletNotFound = "WALLET_NOT_FOUND";
+    public const string WalletNotActive = "WALLET_NOT_ACTIVE";
+    public const string ReservationNotFound = "RESERVATION_NOT_FOUND";
+    public const string ReservationNotActive = "RESERVATION_NOT_ACTIVE";
+    public const string ReservationAlreadyExists = "RESERVATION_ALREADY_EXISTS";
+    public const string JournalInvalid = "JOURNAL_INVALID";
+    public const string JournalUnbalanced = "JOURNAL_UNBALANCED";
+    public const string PostingAlreadyExists = "POSTING_ALREADY_EXISTS";
+    public const string PostingKeyConflict = "POSTING_KEY_CONFLICT";
+    public const string PostingAmountMismatch = "POSTING_AMOUNT_MISMATCH";
+    public const string OriginalPostingNotFound = "ORIGINAL_POSTING_NOT_FOUND";
+    public const string AlreadyReversed = "ALREADY_REVERSED";
+    public const string RefundExceedsPosted = "REFUND_EXCEEDS_POSTED";
+    public const string ApprovalRequired = "APPROVAL_REQUIRED";
+
     public const string PersistedStateInvalid = "PERSISTED_STATE_INVALID";
     public const string ConcurrencyConflict = "CONCURRENCY_CONFLICT";
     public const string ReferenceDataNotFound = "REFERENCE_DATA_NOT_FOUND";

@@ -18,12 +18,14 @@ Placeholder convention, with accounts created lazily and idempotently:
 |---|---|---|---|
 | Merchant available | `MERCHANT:<walletId>:AVAILABLE` | LIABILITY | C |
 | Merchant reserved | `MERCHANT:<walletId>:RESERVED` | LIABILITY | C |
-| Provider payable | `SYSTEM:PROVIDER_PAYABLE:<providerId>:<currencyDefId>` | LIABILITY | C |
-| Provider receivable | `SYSTEM:PROVIDER_RECEIVABLE:<providerId>:<currencyDefId>` | ASSET | D |
-| Fee revenue | `SYSTEM:RANSYS_FEE_REVENUE:<currencyDefId>` | REVENUE | C |
-| Tax payable | `SYSTEM:TAX_PAYABLE:<currencyDefId>` | LIABILITY | C |
-| Cash clearing | `SYSTEM:CASH_CLEARING:<currencyDefId>` | ASSET | D |
-| Adjustment clearing | `SYSTEM:ADJUSTMENT_CLEARING:<currencyDefId>` | CONTROL | D |
+| Provider payable | `SYSTEM:PROVIDER_PAYABLE:<providerId>:<currency>` | LIABILITY | C |
+| Provider receivable | `SYSTEM:PROVIDER_RECEIVABLE:<providerId>:<currency>` | ASSET | D |
+| Fee revenue | `SYSTEM:RANSYS_FEE_REVENUE:<currency>` | REVENUE | C |
+| Tax payable | `SYSTEM:TAX_PAYABLE:<currency>` | LIABILITY | C |
+| Cash clearing | `SYSTEM:CASH_CLEARING:<currency>` | ASSET | D |
+| Adjustment clearing | `SYSTEM:ADJUSTMENT_CLEARING:<currency>` | CONTROL | D |
+
+**Implementation note (Milestone 5):** `<currency>` is rendered as `<code>-V<version>` (e.g. `IDR-V1`), which is unique per currency definition (`uq_currency_definition`). This keeps the domain independent of database UUIDs (Canonical Data Model §138) while keeping one account per currency definition.
 
 ## Consequences
-Final codes will come from Finance. Because codes are produced by a single `LedgerAccountCodes` factory, adopting them is a data migration, not a code change.
+Final codes will come from Finance. Because codes are produced by a single `LedgerAccounts` factory (`src/Ransys.Domain/Ledger/LedgerAccounts.cs`), adopting them is a data migration, not a code change.

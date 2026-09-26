@@ -1,5 +1,6 @@
 using System.Data;
 using Npgsql;
+using Ransys.Application;
 
 namespace Ransys.Persistence.PostgreSql;
 
@@ -12,7 +13,7 @@ namespace Ransys.Persistence.PostgreSql;
 /// stores advance the aggregate's row version optimistically.
 /// </para>
 /// </summary>
-public sealed class PostgresSession : IAsyncDisposable
+public sealed class PostgresSession : IDatabaseSession, IAsyncDisposable
 {
     private bool _completed;
 

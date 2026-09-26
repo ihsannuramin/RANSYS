@@ -34,6 +34,22 @@ public sealed partial class CanonicalCodesTests
         Assert.Equal(DdlValues("ck_attempt_transport_status"), Sorted(CanonicalCodes.TransportStatus.Codes));
 
     [Fact]
+    public void Wallet_status_codes_match_ddl() =>
+        Assert.Equal(DdlValues("ck_wallet_status"), Sorted(CanonicalCodes.WalletStatus.Codes));
+
+    [Fact]
+    public void Reservation_status_codes_match_ddl() =>
+        Assert.Equal(DdlValues("ck_reservation_status"), Sorted(CanonicalCodes.ReservationStatus.Codes));
+
+    [Fact]
+    public void Account_class_codes_match_ddl() =>
+        Assert.Equal(DdlValues("ck_ledger_account_class"), Sorted(CanonicalCodes.AccountClass.Codes));
+
+    [Fact]
+    public void Entry_side_codes_match_ddl() =>
+        Assert.Equal(DdlValues("ck_ledger_entry_side"), Sorted(CanonicalCodes.EntrySide.Codes));
+
+    [Fact]
     public void Codes_round_trip_and_are_case_sensitive()
     {
         foreach (var status in Enum.GetValues<ProcessingStatus>())

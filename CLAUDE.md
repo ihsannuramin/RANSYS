@@ -37,6 +37,13 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 - Loading maps rows back through domain factories and `Transaction.Rehydrate`. Invalid persisted data returns `PERSISTED_STATE_INVALID` (fail closed) instead of loading.
 - DB test assemblies use `PostgresDatabaseFixture` through an xUnit collection defined in each test assembly (e.g. `tests/Ransys.Persistence.Tests/PostgresCollection.cs`). The fixture refuses databases not prefixed `RANSYS_PG`, holds a global advisory lock across assemblies, drops `core/ledger/integration/config/async`, migrates, and seeds `TestSeed`.
 
+## Ledger conventions
+
+- Balances change **only** through `ILedgerPostingService` (`src/Ransys.Ledger`). It runs inside the caller's `IDatabaseSession`, so the caller can also update the Transaction aggregate and commit once. Pure rules live in `src/Ransys.Domain/Ledger`: `PostingKey` (ADR-001), `LedgerAccounts` (ADR-007, currency rendered `IDR-V1`), a balanced `Journal`, the `Wallet` projection and the `Reservation` lifecycle.
+- Every operation follows lock order: caller locks the transaction row → service locks the wallet (`FOR UPDATE`) → the reservation → checks the posting key. A repeated key with the same terms returns `LedgerPostingOutcome.AlreadyPosted`; different terms return `POSTING_KEY_CONFLICT`. No network I/O inside the session.
+- Refunds and adjustments require an approval request id (maker-checker). Total refunds can never exceed the posted amount. Debit adjustments can never make a balance negative.
+- `PostgresLedgerStore` only inserts journals and never updates them (ADR-002). Ledger DB tests (`tests/Ransys.Ledger.Tests`) assert that the wallet projection equals the projection rebuilt from ledger entries. Keep that check in new scenarios.
+
 ## Domain conventions (`src/Ransys.Domain`)
 
 - Value objects are created only through static `Create(...)` factories returning `Result<T>`. They validate and never trim or truncate input. The one exception is the provider response message, which is truncated to 500 characters so an outcome is never lost.

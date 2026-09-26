@@ -1,6 +1,6 @@
 # ADR-013 — Transaction Columns Missing from DDL v1.1 (Routing Audit and Canonical Detail)
 
-**Status:** Proposed — implemented as recommended (migration `0003`); requires architecture review
+**Status:** Accepted — approved by product owner, 2026-09-26 (implemented in migration `0003`)
 
 ## Context
 Mapping the Transaction aggregate to `core.transactions` (Milestone 4) found data that the architecture requires to be stored but DDL v1.1 has no column for.

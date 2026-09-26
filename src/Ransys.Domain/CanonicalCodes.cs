@@ -1,6 +1,7 @@
 using System.Collections.Frozen;
 using Ransys.Domain.Attempts;
 using Ransys.Domain.Fees;
+using Ransys.Domain.Ledger;
 using Ransys.Domain.Transactions;
 
 namespace Ransys.Domain;
@@ -112,6 +113,40 @@ public static class CanonicalCodes
         (Transactions.StatusDimension.Financial, "FINANCIAL"),
         (Transactions.StatusDimension.Reconciliation, "RECONCILIATION"),
         (Transactions.StatusDimension.Settlement, "SETTLEMENT"));
+
+    /// <summary>ADR-008.</summary>
+    public static readonly CodeMap<LedgerOperationType> LedgerOperationType = new(
+        (Ledger.LedgerOperationType.TopUp, "TOPUP"),
+        (Ledger.LedgerOperationType.Reserve, "RESERVE"),
+        (Ledger.LedgerOperationType.Post, "POST"),
+        (Ledger.LedgerOperationType.Release, "RELEASE"),
+        (Ledger.LedgerOperationType.Reversal, "REVERSAL"),
+        (Ledger.LedgerOperationType.Refund, "REFUND"),
+        (Ledger.LedgerOperationType.AdjustmentCredit, "ADJUSTMENT_CREDIT"),
+        (Ledger.LedgerOperationType.AdjustmentDebit, "ADJUSTMENT_DEBIT"),
+        (Ledger.LedgerOperationType.SettlementClear, "SETTLEMENT_CLEAR"),
+        (Ledger.LedgerOperationType.RefundClear, "REFUND_CLEAR"));
+
+    public static readonly CodeMap<EntrySide> EntrySide = new(
+        (Ledger.EntrySide.Debit, "D"),
+        (Ledger.EntrySide.Credit, "C"));
+
+    public static readonly CodeMap<AccountClass> AccountClass = new(
+        (Ledger.AccountClass.Asset, "ASSET"),
+        (Ledger.AccountClass.Liability, "LIABILITY"),
+        (Ledger.AccountClass.Revenue, "REVENUE"),
+        (Ledger.AccountClass.Expense, "EXPENSE"),
+        (Ledger.AccountClass.Control, "CONTROL"));
+
+    public static readonly CodeMap<WalletStatus> WalletStatus = new(
+        (Ledger.WalletStatus.Active, "ACTIVE"),
+        (Ledger.WalletStatus.Frozen, "FROZEN"),
+        (Ledger.WalletStatus.Closed, "CLOSED"));
+
+    public static readonly CodeMap<ReservationStatus> ReservationStatus = new(
+        (Ledger.ReservationStatus.Active, "ACTIVE"),
+        (Ledger.ReservationStatus.Committed, "COMMITTED"),
+        (Ledger.ReservationStatus.Released, "RELEASED"));
 
     public static readonly CodeMap<FeeComponentType> FeeComponentType = new(
         (Fees.FeeComponentType.MerchantServiceFee, "MERCHANT_SERVICE_FEE"),
