@@ -25,3 +25,8 @@ Concurrent same-reference inserts rely on the partial unique index; a unique vio
 
 ## Consequences
 Correctness does not depend on the sweep running on time; the sweep only keeps the index small.
+
+## Implementation note (Milestone 6)
+- `IdempotencyService.ClaimAsync` checks the active claim (expiring it lazily when due), then, under a savepoint, creates the transaction row and inserts the claim. A PostgreSQL unique violation aborts the enclosing transaction, so the loser of a concurrent race rolls back to the savepoint (removing its transaction row), re-reads the winner's claim and returns either the existing transaction or `DUPLICATE_REFERENCE_CONFLICT`.
+- A fingerprint with a different algorithm version cannot prove "same payload" and is treated as a conflict (fail closed, ADR-006).
+- The sweep is `IdempotencyExpiryWorker` in `Ransys.Workers` (`FOR UPDATE SKIP LOCKED`, bounded batches, section `Ransys:IdempotencyExpiry`).

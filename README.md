@@ -28,6 +28,11 @@ export RANSYS_TEST_PG="Host=localhost;Port=5432;Database=RANSYS_PG;Username=post
 
 Default when unset: `Host=localhost;Port=5432;Database=RANSYS_PG;Username=postgres`.
 
+
+## Running the worker host
+
+`Ransys.Workers` requires the connection string `ConnectionStrings:TransactionDb` (for example through the environment variable `ConnectionStrings__TransactionDb`) and refuses to start without it. It currently runs the idempotency expiry sweep (`Ransys:IdempotencyExpiry:Interval`, `Ransys:IdempotencyExpiry:BatchSize`).
+
 ## Solution layout
 
 | Project | Responsibility |
@@ -56,7 +61,7 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 | 3 Transaction aggregate | Done |
 | 4 PostgreSQL persistence | Done |
 | 5 Ledger posting service | Done |
-| 6 Idempotency service | Pending |
+| 6 Idempotency service | Done |
 | 7 Transaction attempts | Pending |
 | 8 Transactional outbox | Pending |
 | 9 Routing foundation | Pending |

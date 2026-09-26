@@ -51,6 +51,9 @@ public static class ErrorCodes
     public const string RefundExceedsPosted = "REFUND_EXCEEDS_POSTED";
     public const string ApprovalRequired = "APPROVAL_REQUIRED";
 
+    /// <summary>Same client reference with a different fingerprint (PRD §11.3; canonical response 2003).</summary>
+    public const string DuplicateReferenceConflict = "DUPLICATE_REFERENCE_CONFLICT";
+
     public const string PersistedStateInvalid = "PERSISTED_STATE_INVALID";
     public const string ConcurrencyConflict = "CONCURRENCY_CONFLICT";
     public const string ReferenceDataNotFound = "REFERENCE_DATA_NOT_FOUND";

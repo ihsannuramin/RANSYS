@@ -6,6 +6,14 @@ namespace Ransys.Application;
 /// </summary>
 public interface IDatabaseSession
 {
+    /// <summary>
+    /// Savepoints let one step fail (e.g. losing a unique-index race) without aborting the whole transaction.
+    /// </summary>
+    Task CreateSavepointAsync(string name, CancellationToken cancellationToken = default);
+
+    Task RollbackToSavepointAsync(string name, CancellationToken cancellationToken = default);
+
+    Task ReleaseSavepointAsync(string name, CancellationToken cancellationToken = default);
 }
 
 /// <summary>Source of the current time; injectable for deterministic tests.</summary>

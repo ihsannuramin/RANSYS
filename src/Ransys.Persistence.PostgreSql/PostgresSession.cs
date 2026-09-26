@@ -61,6 +61,24 @@ public sealed class PostgresSession : IDatabaseSession, IAsyncDisposable
         _completed = true;
     }
 
+    public Task CreateSavepointAsync(string name, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return Transaction.SaveAsync(name, cancellationToken);
+    }
+
+    public Task RollbackToSavepointAsync(string name, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return Transaction.RollbackAsync(name, cancellationToken);
+    }
+
+    public Task ReleaseSavepointAsync(string name, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return Transaction.ReleaseAsync(name, cancellationToken);
+    }
+
     public async ValueTask DisposeAsync()
     {
         try

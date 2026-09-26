@@ -44,6 +44,11 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 - Refunds and adjustments require an approval request id (maker-checker). Total refunds can never exceed the posted amount. Debit adjustments can never make a balance negative.
 - `PostgresLedgerStore` only inserts journals and never updates them (ADR-002). Ledger DB tests (`tests/Ransys.Ledger.Tests`) assert that the wallet projection equals the projection rebuilt from ledger entries. Keep that check in new scenarios.
 
+## Idempotency
+
+- New transactions are created only through `IdempotencyService.ClaimAsync(session, channel, identity, createTransaction)` (`src/Ransys.TransactionCore/Idempotency`). It returns `New` (your callback inserted the row), `ExistingTransaction` (return that transaction; discard the aggregate you built), or `DUPLICATE_REFERENCE_CONFLICT`. The callback runs under a savepoint, because losing the `ux_idempotency_active_reference` race aborts the PG transaction. Don't catch unique violations elsewhere to replicate this.
+- `IDatabaseSession` supports savepoints for this purpose. `Ransys.Workers` hosts `IdempotencyExpiryWorker` (ADR-009 sweep) and requires `ConnectionStrings:TransactionDb`.
+
 ## Domain conventions (`src/Ransys.Domain`)
 
 - Value objects are created only through static `Create(...)` factories returning `Result<T>`. They validate and never trim or truncate input. The one exception is the provider response message, which is truncated to 500 characters so an outcome is never lost.
