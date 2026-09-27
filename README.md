@@ -87,6 +87,7 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 | 14 Architecture re-review remediation (`review/RANSYS_Architecture_ReReview_1fc9d10.md`, RR1-RR3) | Implemented — see below |
 | 15 Architecture review remediation, round 3 (`review/RANSYS_Architecture_Review_b9616fb.md`, T1-T4) | Implemented — see below |
 | 16 Architecture review remediation, round 4 (`review/RANSYS_Review_Progress_7dbaf4b.md`, U1-U2) | Implemented — see below |
+| 17 Architecture review remediation, round 5 (`review/RANSYS_Review_Progress_2ff8477.md`, V1-V3) | Implemented — see below |
 
 ## Phase 1 Definition of Done (main.md §28)
 
@@ -182,7 +183,19 @@ The review's PRD-scope progress estimate (≈40% overall, ≈85% core+API, not a
 
 Final verification for round 4: `dotnet build Ransys.sln` — 0 warnings, 0 errors; `dotnet test Ransys.sln` against real PostgreSQL — **1,464 passed, 0 failed, 0 skipped** across all 8 test projects, at commit `e2c5cf9`. All 6 new tests (4 integration + domain-level unit tests directly on `MergeLatestProviderResult`) were confirmed to fail against the pre-fix code with exactly the wrong values the review described, and pass after; every T1–T4/RR-era test still passes unmodified.
 
-As of this commit, `main` is ahead of `origin/main` (`b9616fb`) by several commits — not yet pushed, pending the reviewer's own re-verification; this documentation reflects implementer completion, not a reviewer sign-off, and this push status is only accurate as of this commit (check `git log`/`git status` for the current state, since it will go stale as work continues).
+A **fifth review** (`review/RANSYS_Review_Progress_2ff8477.md`, HEAD `2ff8477`) confirmed T1/T3/T4/RR1 static and found the U1 identity check still collapsed three semantically distinct fields into one comparison, plus a matching read-path gap in the child-request reader that was never updated to U2's rule:
+
+| ID | Finding | Fix | Commit |
+|---|---|---|---|
+| V1 | `ProviderReference ?? ProviderStan ?? ProviderRrn` was compared as one collapsed string — this both missed real conflicts (matching reference let STAN/RRN silently get overwritten) and flagged real enrichments as false conflicts (a matching RRN with a newly-added reference) | `MergeLatestProviderResult` now compares each of the three identity fields independently (`MergeIdentityField`: null/null stays null, null/value enriches, value/null keeps, same value keeps, different value conflicts) — any single field conflicting makes the whole report `ConflictingIdentity` and leaves the accepted evidence fully untouched; `Data` keeps its already-decided snapshot-replace semantics, pinned down by a dedicated test | `72e52bd` |
+| V2 | `MergeLatestProviderResult` could return `ConflictingIdentity`, but `TransactionFinalizationService` only branched on `Recorded`/`Enriched` — the conflict fell through to a plain `NoChange`, and the sink acked it as ordinary `Duplicate`, with no durable trace | `ApplyAsync` now calls a new `Transaction.RecordProviderEvidenceConflict` on `ConflictingIdentity`, reusing the *existing* reconciliation-exception mechanism (idempotent, real history row, real `RECON_EXCEPTION_CREATED` outbox event) instead of a new conflict log. Returns `TransitionKind.ConflictRecorded`, so the sink's already-existing ack mapping correctly acks the distinct `CONFLICT_RECORDED` code (not `Duplicate`) with no sink changes needed | `72e52bd` |
+| V3 | `ProviderRequestFactory.OriginalProviderReferences.From(Transaction,...)` — the reader that builds a refund/reversal/void child's outgoing provider request — still fell back to the old per-attempt scan whenever the accepted projection's references were *all* null, unlike GET/replay (U2), which trust an existing projection's own value even when null. A superseded PENDING reference could leak into a real child provider request | Dropped the "at least one non-null reference" condition — an existing projection is now trusted exactly like GET/replay; only a genuinely missing projection falls back to the attempt scan. A "fail closed if the provider needs a reference but none is accepted" policy is noted as an explicit, separate out-of-scope follow-up (would need its own ADR) | `72e52bd` |
+
+The review's progress estimate is unchanged from the previous round (≈40% PRD, ≈85% core+API, gate still BLOCKED at review time) — informational, not a code defect.
+
+Final verification for round 5: `dotnet build Ransys.sln` — 0 warnings, 0 errors; `dotnet test Ransys.sln` against real PostgreSQL — **1,471 passed, 0 failed, 0 skipped** across all 8 test projects, at commit `72e52bd`. All 7 new tests (4 domain-level unit tests directly on `MergeLatestProviderResult`, 3 integration tests including a real child provider request inspected through a scripted adapter) were confirmed to fail against the pre-fix code with exactly the wrong values/acks the review described, and pass after.
+
+As of this commit, `main` is one commit (`72e52bd`) ahead of `origin/main` (`2ff8477`) — not yet pushed, pending the reviewer's own re-verification; this documentation reflects implementer completion, not a reviewer sign-off, and this push status is only accurate as of this commit (check `git log`/`git status` for the current state, since it will go stale as work continues).
 
 ## Architecture decisions
 
