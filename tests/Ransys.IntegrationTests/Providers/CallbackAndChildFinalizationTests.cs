@@ -27,6 +27,7 @@ public sealed class CallbackAndChildFinalizationTests(PostgresDatabaseFixture db
     public async Task Callback_success_posts_once_duplicate_is_no_change_and_contradiction_is_a_recon_exception()
     {
         var (payment, wallet) = await _h.ProcessingPayment();
+        await _h.StartAttempt(payment, _h.ProviderA);
 
         var first = await _h.CallbackSink.SubmitAsync(Callback(payment, ProviderOutcome.Success), CancellationToken.None);
         var duplicate = await _h.CallbackSink.SubmitAsync(Callback(payment, ProviderOutcome.Success), CancellationToken.None);
@@ -63,6 +64,7 @@ public sealed class CallbackAndChildFinalizationTests(PostgresDatabaseFixture db
     public async Task Pending_callback_marks_pending_and_a_late_pending_after_success_is_ignored()
     {
         var (payment, _) = await _h.ProcessingPayment();
+        await _h.StartAttempt(payment, _h.ProviderA);
 
         var pending = await _h.CallbackSink.SubmitAsync(Callback(payment, ProviderOutcome.Pending, ResultFinality.NonFinal), CancellationToken.None);
         Assert.Equal(ProcessingStatus.Pending, (await _h.Load(payment)).ProcessingStatus);
@@ -78,6 +80,7 @@ public sealed class CallbackAndChildFinalizationTests(PostgresDatabaseFixture db
     public async Task Impossible_callback_result_is_treated_as_in_doubt_and_keeps_the_hold()
     {
         var (payment, wallet) = await _h.ProcessingPayment();
+        await _h.StartAttempt(payment, _h.ProviderA);
         var impossible = Callback(payment, ProviderOutcome.Success, transport: TransportStatus.Timeout);
 
         var ack = await _h.CallbackSink.SubmitAsync(impossible, CancellationToken.None);
@@ -87,6 +90,75 @@ public sealed class CallbackAndChildFinalizationTests(PostgresDatabaseFixture db
         Assert.Equal((ProcessingStatus.InDoubt, FinancialStatus.Reserved), (loaded.ProcessingStatus, loaded.FinancialStatus));
         Assert.Equal("1002", loaded.ResponseCode);
         Assert.Equal((1_000_000m, 897_500m, 102_500m), await Balances(wallet));
+    }
+
+    /// <summary>
+    /// R2: the callback sink must persist provider evidence (reference/STAN/RRN) on the attempt exactly once, in the same
+    /// database transaction as the status update, and never drop it even though the outcome was computed and previously
+    /// discarded. Reproduces an attempt SENT with no outcome (as after a timeout), then a callback resolving it.
+    /// </summary>
+    [Fact]
+    public async Task Callback_success_persists_provider_evidence_on_the_attempt_for_reuse_by_child_requests()
+    {
+        var (payment, _) = await _h.ProcessingPayment();
+        var attempt = await _h.StartAttempt(payment, _h.ProviderA); // SENT, no outcome yet (e.g. after a timeout)
+        Assert.False(attempt.IsOutcomeRecorded);
+
+        var ack = await _h.CallbackSink.SubmitAsync(
+            Callback(payment, ProviderOutcome.Success, providerReference: "PRV-REF-999", providerStan: "123456", providerRrn: "RRN000111"),
+            CancellationToken.None);
+
+        Assert.Equal((true, ProviderCallbackSink.Applied), (ack.Accepted, ack.AcknowledgementCode));
+        Assert.Equal(ProcessingStatus.Success, (await _h.Load(payment)).ProcessingStatus);
+
+        var reloaded = Assert.Single(await _h.LoadAttempts(payment));
+        Assert.True(reloaded.IsOutcomeRecorded);
+        Assert.Equal(
+            ("PRV-REF-999", "123456", "RRN000111"),
+            (reloaded.Outcome!.ProviderReference, reloaded.Outcome.ProviderStan, reloaded.Outcome.ProviderRrn));
+
+        var recordedAt = await _h.Query<DateTime?>(
+            "SELECT outcome_recorded_at FROM core.transaction_attempts WHERE transaction_attempt_id = @id", new { id = attempt.Id.Value });
+        Assert.NotNull(recordedAt);
+
+        // A refund/reversal/void child of this original would carry the same evidence (ProviderRequestFactory.cs).
+        var forChild = OriginalProviderReferences.From(await _h.LoadAttempts(payment));
+        Assert.Equal(("PRV-REF-999", "123456", "RRN000111"), (forChild.ProviderReference, forChild.ProviderStan, forChild.ProviderRrn));
+    }
+
+    /// <summary>
+    /// R1: a callback must be validated and applied under one continuous lock. Reproduces the race by ordering the
+    /// pieces exactly as a concurrent failover would: attempt A is proven NOT_SENT and the transaction fails over to
+    /// provider B with a new attempt, committed; only then does a callback claiming SUCCESS from provider A arrive. It
+    /// must not be blindly applied — A is no longer the routed provider, so nothing about B's context is affected.
+    /// </summary>
+    [Fact]
+    public async Task Stale_callback_from_a_provider_superseded_by_failover_is_rejected()
+    {
+        var (payment, wallet) = await _h.ProcessingPayment(); // routed to Provider A
+        var attemptA = await _h.StartAttempt(payment, _h.ProviderA);
+
+        await using (var session = await _h.Session())
+        {
+            var transaction = Ok(await _h.Transactions.GetAsync(session, payment, Persistence.PostgreSql.Transactions.RowLock.ForUpdate))!;
+            var notSent = AttemptOutcome.Create(false, Domain.Attempts.TransportStatus.ConnectionError).Value;
+            Ok(await _h.Attempts.RecordOutcomeAsync(session, attemptA, notSent));
+            var attempts = Ok(await _h.AttemptStore.GetByTransactionAsync(session, payment));
+            Assert.True(transaction.RecordFailover(attempts[0], _h.ProviderB, "PROVIDER_LINK_DOWN", DateTimeOffset.UtcNow).IsSuccess);
+            Ok(await _h.Attempts.StartAsync(session, transaction, AttemptType.Payment, _h.ProviderB, "corr-2", "trace-2"));
+            Ok(await _h.Transactions.UpdateAsync(session, transaction));
+            await session.CommitAsync();
+        }
+
+        // A late report from provider A, now superseded: correlation must not misapply it against B's context.
+        var stale = await _h.CallbackSink.SubmitAsync(Callback(payment, ProviderOutcome.Success), CancellationToken.None);
+
+        Assert.Equal((false, ProviderCallbackSink.ProviderMismatch), (stale.Accepted, stale.AcknowledgementCode));
+        var after = await _h.Load(payment);
+        Assert.Equal(ProcessingStatus.Processing, after.ProcessingStatus); // never wrongly completed from A's stale report
+        Assert.Equal(_h.ProviderB, after.Routing!.CurrentProvider);
+        Assert.Equal(0, await Journals($"TX:{payment}:POST")); // no posting was ever made from the stale callback
+        Assert.Equal((1_000_000m, 897_500m, 102_500m), await Balances(wallet)); // the hold is untouched
     }
 
     [Fact]
@@ -167,9 +239,12 @@ public sealed class CallbackAndChildFinalizationTests(PostgresDatabaseFixture db
         ProviderOutcome outcome,
         ResultFinality finality = ResultFinality.Definitive,
         TransportStatus transport = TransportStatus.Response,
-        bool requestSent = true)
+        bool requestSent = true,
+        string? providerReference = "PRV-CB",
+        string? providerStan = null,
+        string? providerRrn = null)
     {
-        var references = new ProviderTransactionReferences("REF", null, null, null, "PRV-CB", null, null, ImmutableDictionary<string, string>.Empty);
+        var references = new ProviderTransactionReferences("REF", null, null, null, providerReference, providerStan, providerRrn, ImmutableDictionary<string, string>.Empty);
         var result = new ProviderResult(
             outcome, finality, new ProviderTransportResult(transport, requestSent, null, null, null),
             outcome == ProviderOutcome.Success ? "0000" : "1001", "00", "callback", references,

@@ -5,6 +5,7 @@ using Ransys.Domain;
 using Ransys.Domain.Attempts;
 using Ransys.Domain.Common;
 using Ransys.Domain.Transactions;
+using Ransys.TransactionCore.Attempts;
 using Ransys.TransactionCore.Finalization;
 
 namespace Ransys.TransactionCore.Providers;
@@ -32,6 +33,8 @@ namespace Ransys.TransactionCore.Providers;
 public sealed class ProviderCallbackSink(
     IDatabaseSessionFactory sessions,
     ITransactionRepository transactions,
+    ITransactionAttemptStore attemptStore,
+    TransactionAttemptService attemptService,
     TransactionFinalizationService finalization,
     IClock clock) : IProviderCallbackSink
 {
@@ -62,18 +65,45 @@ public sealed class ProviderCallbackSink(
 
         try
         {
+            // A single continuous lock for the whole method: no unlocked read is ever acted on below (R1).
             await using var session = await sessions.BeginAsync(cancellationToken);
             var id = new TransactionId(callback.OriginalRansysTransactionId);
-            var loaded = await transactions.GetAsync(session, id, forUpdate: false, cancellationToken);
+            var loaded = await transactions.GetAsync(session, id, forUpdate: true, cancellationToken);
             if (loaded.IsFailure || loaded.Value is not { } transaction)
             {
                 return new ProviderCallbackAck(false, loaded.IsFailure ? Rejected : UnknownTransaction);
             }
 
-            // A provider may only report on requests routed to it.
+            // A provider may only report on requests routed to it. Race-free: the row is locked above.
             if (transaction.Routing?.CurrentProvider.ProviderId != new ProviderId(callback.ProviderId))
             {
                 return new ProviderCallbackAck(false, ProviderMismatch);
+            }
+
+            // Correlate to the attempt the provider actually answered, and persist its evidence exactly once (ADR-005/R2):
+            // provider reference/STAN/RRN must be durable before children (reversal/refund/void) or GET can rely on them.
+            var attempts = await attemptStore.GetByTransactionAsync(session, id, cancellationToken);
+            if (attempts.IsFailure)
+            {
+                return new ProviderCallbackAck(false, Rejected);
+            }
+
+            var attempt = attempts.Value
+                .Where(a => a.Provider.ProviderId == new ProviderId(callback.ProviderId))
+                .OrderByDescending(a => a.AttemptNumber)
+                .FirstOrDefault();
+            if (attempt is null)
+            {
+                return new ProviderCallbackAck(false, ProviderMismatch);
+            }
+
+            if (!attempt.IsOutcomeRecorded)
+            {
+                var recorded = await attemptService.RecordOutcomeAsync(session, attempt, interpreted.Outcome, cancellationToken);
+                if (recorded.IsFailure)
+                {
+                    return new ProviderCallbackAck(false, Rejected);
+                }
             }
 
             var applied = await finalization.ApplyAsync(
@@ -84,6 +114,7 @@ public sealed class ProviderCallbackSink(
                     ChangeSource.Callback,
                     "CALLBACK_" + interpreted.ReasonCode,
                     interpreted.ResponseCode,
+                    AttemptId: attempt.Id,
                     ReasonDescription: callback.CallbackId is { Length: > 0 and <= 400 } callbackId ? $"Provider callback {callbackId}" : null),
                 cancellationToken);
 

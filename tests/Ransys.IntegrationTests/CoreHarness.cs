@@ -47,7 +47,8 @@ internal sealed class CoreHarness
         Reversals = new ReversalService(
             Transactions, new IdempotencyService(new PostgresIdempotencyStore(), clock, ids), new PostgresRoutingStore(),
             new PostgresOutboxWriter(), clock, ids);
-        CallbackSink = new ProviderCallbackSink(new PostgresSessionFactory(db.DataSource), Transactions, Finalization, clock);
+        CallbackSink = new ProviderCallbackSink(
+            new PostgresSessionFactory(db.DataSource), Transactions, AttemptStore, Attempts, Finalization, clock);
     }
 
     public ProviderCallbackSink CallbackSink { get; }
@@ -97,6 +98,21 @@ internal sealed class CoreHarness
     }
 
     /// <summary>
+    /// Starts (and persists) the primary attempt on a PROCESSING transaction, as Session 1 always does before the real
+    /// provider call (ADR-005). <see cref="ProcessingPayment"/> stops short of this so tests can drive the attempt
+    /// themselves; callback correlation needs one to exist.
+    /// </summary>
+    public async Task<Domain.Attempts.TransactionAttempt> StartAttempt(
+        TransactionId tx, ProviderReference provider, Domain.Attempts.AttemptType attemptType = Domain.Attempts.AttemptType.Payment)
+    {
+        await using var session = await Session();
+        var transaction = Ok(await Transactions.GetAsync(session, tx, Persistence.PostgreSql.Transactions.RowLock.ForUpdate))!;
+        var attempt = Ok(await Attempts.StartAsync(session, transaction, attemptType, provider, "corr-1", "trace-1"));
+        await session.CommitAsync();
+        return attempt;
+    }
+
+    /// <summary>
     /// A REFUND / VOID child of <paramref name="original"/> in PROCESSING on the original's provider, inserted directly
     /// (the processing service creates children through idempotency; this only reaches the state for finalization tests).
     /// </summary>
@@ -117,6 +133,10 @@ internal sealed class CoreHarness
 
         await using var session = await Session();
         Ok(await Transactions.InsertAsync(session, child));
+
+        // A real child always carries the attempt the provider answered (ADR-005); the callback sink correlates on it.
+        Ok(await Attempts.StartAsync(
+            session, child, Transaction.PrimaryAttemptTypeFor(type)!.Value, parent.Routing.CurrentProvider, "corr-child", "trace-child"));
         await session.CommitAsync();
         return id;
     }
