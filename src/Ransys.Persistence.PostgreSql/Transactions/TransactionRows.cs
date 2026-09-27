@@ -81,6 +81,19 @@ internal sealed class TransactionRow
 
     public string CanonicalDetail { get; init; } = "{}";
 
+    /// <summary>ADR-027: the latest provider evidence for this transaction, from any source (always overwritable).</summary>
+    public string? LatestResultProviderReference { get; init; }
+
+    public string? LatestResultProviderStan { get; init; }
+
+    public string? LatestResultProviderRrn { get; init; }
+
+    public string? LatestResultData { get; init; }
+
+    public string? LatestResultSource { get; init; }
+
+    public DateTime? LatestResultRecordedAt { get; init; }
+
     public DateTime ReceivedAt { get; init; }
 
     public DateTime? ValidatedAt { get; init; }

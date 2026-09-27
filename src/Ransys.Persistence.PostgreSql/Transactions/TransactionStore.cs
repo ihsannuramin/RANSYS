@@ -1,5 +1,6 @@
 using Dapper;
 using Ransys.Domain;
+using Ransys.Domain.Attempts;
 using Ransys.Domain.Common;
 using Ransys.Domain.Fees;
 using Ransys.Domain.Monetary;
@@ -44,6 +45,8 @@ public sealed class TransactionStore : ITransactionRepository
                t.routing_rule_version, t.failover_count, t.failover_reason, t.routing_decided_at,
                t.config_version_id, t.routing_config_version_id, t.fee_config_version_id, t.provider_policy_version,
                t.metadata::text AS metadata, t.canonical_detail::text AS canonical_detail,
+               t.latest_result_provider_reference, t.latest_result_provider_stan, t.latest_result_provider_rrn,
+               t.latest_result_data::text AS latest_result_data, t.latest_result_source, t.latest_result_recorded_at,
                t.received_at, t.validated_at, t.financial_posted_at, t.completed_at, t.updated_at, t.row_version
         FROM core.transactions t
         JOIN core.currency_definitions cd ON cd.currency_definition_id = t.currency_definition_id
@@ -99,6 +102,12 @@ public sealed class TransactionStore : ITransactionRepository
             routing_config_version_id = @RoutingConfigVersionId,
             fee_config_version_id = @FeeConfigVersionId,
             provider_policy_version = @ProviderPolicyVersion,
+            latest_result_provider_reference = @LatestResultProviderReference,
+            latest_result_provider_stan = @LatestResultProviderStan,
+            latest_result_provider_rrn = @LatestResultProviderRrn,
+            latest_result_data = CAST(@LatestResultData AS jsonb),
+            latest_result_source = @LatestResultSource,
+            latest_result_recorded_at = @LatestResultRecordedAt,
             validated_at = @ValidatedAt,
             financial_posted_at = @FinancialPostedAt,
             completed_at = @CompletedAt,
@@ -323,6 +332,12 @@ public sealed class TransactionStore : ITransactionRepository
         t.Configuration.RoutingConfigVersionId,
         t.Configuration.FeeConfigVersionId,
         t.Configuration.ProviderPolicyVersion,
+        LatestResultProviderReference = t.LatestProviderResult?.Evidence.ProviderReference,
+        LatestResultProviderStan = t.LatestProviderResult?.Evidence.ProviderStan,
+        LatestResultProviderRrn = t.LatestProviderResult?.Evidence.ProviderRrn,
+        LatestResultData = DbValues.ResponseDataToJson(t.LatestProviderResult?.Evidence.Data),
+        LatestResultSource = t.LatestProviderResult is { } latest ? CanonicalCodes.ChangeSource.ToCode(latest.Source) : null,
+        LatestResultRecordedAt = DbValues.ToDb(t.LatestProviderResult?.RecordedAt),
         ValidatedAt = DbValues.ToDb(t.ValidatedAt),
         FinancialPostedAt = DbValues.ToDb(t.FinancialPostedAt),
         CompletedAt = DbValues.ToDb(t.CompletedAt),
@@ -423,6 +438,7 @@ internal static class TransactionRowMapper
         var fees = row.ValidatedAt is null ? Result<FeeComponents?>.Success(null) : ToFees(feeRows, currency.Value);
         var routing = ToRouting(row);
         var reserve = ToReserve(row, currency.Value);
+        var latestResult = ToLatestProviderResult(row);
 
         var firstError = new[]
         {
@@ -434,6 +450,7 @@ internal static class TransactionRowMapper
             fees.IsFailure ? fees.Error : null,
             routing.IsFailure ? routing.Error : null,
             reserve.IsFailure ? reserve.Error : null,
+            latestResult.IsFailure ? latestResult.Error : null,
         }.FirstOrDefault(e => e is not null);
         if (firstError is not null)
         {
@@ -471,6 +488,7 @@ internal static class TransactionRowMapper
             routing.Value,
             new TransactionConfigurationSnapshot(
                 row.ConfigVersionId, row.RoutingConfigVersionId, row.FeeConfigVersionId, row.ProviderPolicyVersion),
+            latestResult.Value,
             metadata.Value,
             processing,
             financial,
@@ -556,6 +574,38 @@ internal static class TransactionRowMapper
         var decision = RoutingDecision.Create(
             initial.Value, actual.Value, ruleVersion, row.FailoverCount, row.FailoverReason, DbValues.FromDb(decidedAt));
         return decision.IsSuccess ? decision.Value : decision.Error;
+    }
+
+    /// <summary>
+    /// ADR-027: rebuilds the latest-provider-result projection. Null when no evidence has ever been recorded
+    /// (<c>latest_result_recorded_at IS NULL</c>). Only the fields this read path needs are reconstructed into a
+    /// minimal <see cref="AttemptOutcome"/> (<c>RequestSent = true</c>, <see cref="TransportStatus.Response"/>).
+    /// </summary>
+    private static Result<TransactionResultProjection?> ToLatestProviderResult(TransactionRow row)
+    {
+        if (row.LatestResultRecordedAt is not { } recordedAt)
+        {
+            return Result<TransactionResultProjection?>.Success(null);
+        }
+
+        if (row.LatestResultSource is null || !CanonicalCodes.ChangeSource.TryParse(row.LatestResultSource, out var source))
+        {
+            return RansysError.Validation(ErrorCodes.OutOfRange, $"Unknown change source '{row.LatestResultSource}'.", "latestResultSource");
+        }
+
+        var evidence = AttemptOutcome.Create(
+            requestSent: true,
+            TransportStatus.Response,
+            providerReference: row.LatestResultProviderReference,
+            providerStan: row.LatestResultProviderStan,
+            providerRrn: row.LatestResultProviderRrn,
+            data: DbValues.ResponseDataFromJson(row.LatestResultData));
+        if (evidence.IsFailure)
+        {
+            return evidence.Error;
+        }
+
+        return new TransactionResultProjection(evidence.Value, source, DbValues.FromDb(recordedAt));
     }
 
     private static RansysError Invalid(TransactionRow row, RansysError cause) =>

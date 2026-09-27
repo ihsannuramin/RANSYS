@@ -5,12 +5,19 @@ using Ransys.Domain.Attempts;
 using Ransys.Domain.Common;
 using Ransys.Domain.Fees;
 using Ransys.Domain.Monetary;
+using Ransys.Domain.Routing;
 using Ransys.Domain.Transactions;
 using Ransys.Ledger;
+using Ransys.TransactionCore.Attempts;
 
 namespace Ransys.TransactionCore.Finalization;
 
-/// <summary>A provider result for the original request, from any source (sync response, callback, status check, recon…).</summary>
+/// <summary>
+/// A provider result for the original request, from any source (sync response, callback, status check, recon…).
+/// <paramref name="ExpectedProvider"/> and <paramref name="Evidence"/> are populated only by a provider callback
+/// (ADR-027): they let finalization correlate to the attempt the provider actually answered and persist its
+/// evidence under the same lock order as everything else, instead of the caller doing so beforehand.
+/// </summary>
 public sealed record ProviderResultCommand(
     TransactionId TransactionId,
     AttemptResolutionKind Resolution,
@@ -18,7 +25,9 @@ public sealed record ProviderResultCommand(
     string ReasonCode,
     string? ResponseCode = null,
     AttemptId? AttemptId = null,
-    string? ReasonDescription = null);
+    string? ReasonDescription = null,
+    ProviderId? ExpectedProvider = null,
+    AttemptOutcome? Evidence = null);
 
 public sealed record FinalizationResult(
     TransitionKind Kind,
@@ -47,6 +56,8 @@ public sealed class TransactionFinalizationService
     private readonly IOutboxWriter _outbox;
     private readonly IClock _clock;
     private readonly IIdGenerator _ids;
+    private readonly ITransactionAttemptStore _attemptStore;
+    private readonly TransactionAttemptService _attemptService;
 
     public TransactionFinalizationService(
         IDatabaseSessionFactory sessions,
@@ -54,7 +65,9 @@ public sealed class TransactionFinalizationService
         ILedgerPostingService ledger,
         IOutboxWriter outbox,
         IClock clock,
-        IIdGenerator ids)
+        IIdGenerator ids,
+        ITransactionAttemptStore attemptStore,
+        TransactionAttemptService attemptService)
     {
         _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
         _transactions = transactions ?? throw new ArgumentNullException(nameof(transactions));
@@ -62,6 +75,8 @@ public sealed class TransactionFinalizationService
         _outbox = outbox ?? throw new ArgumentNullException(nameof(outbox));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _ids = ids ?? throw new ArgumentNullException(nameof(ids));
+        _attemptStore = attemptStore ?? throw new ArgumentNullException(nameof(attemptStore));
+        _attemptService = attemptService ?? throw new ArgumentNullException(nameof(attemptService));
     }
 
     /// <summary>Applies the result in its own session; commits only on success (fail closed).</summary>
@@ -83,13 +98,6 @@ public sealed class TransactionFinalizationService
     {
         ArgumentNullException.ThrowIfNull(command);
 
-        var context = TransitionContext.Create(
-            command.ReasonCode, command.Source, _clock.UtcNow, command.ReasonDescription, command.AttemptId, command.ResponseCode);
-        if (context.IsFailure)
-        {
-            return context.Error;
-        }
-
         // Lock order: a child's original (parent) is locked before the child itself (ADR-012, ADR-023, ADR-019).
         var peek = await _transactions.GetAsync(session, command.TransactionId, forUpdate: false, cancellationToken);
         if (peek.IsFailure)
@@ -99,7 +107,7 @@ public sealed class TransactionFinalizationService
 
         if (peek.Value is null)
         {
-            return RansysError.Validation(ErrorCodes.InvalidStateTransition, $"Transaction {command.TransactionId} does not exist.");
+            return RansysError.Validation(ErrorCodes.TransactionNotFound, $"Transaction {command.TransactionId} does not exist.");
         }
 
         Transaction? original = null;
@@ -122,6 +130,51 @@ public sealed class TransactionFinalizationService
         }
 
         var transaction = loaded.Value!;
+
+        // A callback identifies the reporting provider, not the attempt (ADR-027): correlate to the attempt of the
+        // current routed provider under the lock just taken, so this never races the sink's own separate read.
+        AttemptId? effectiveAttemptId = command.AttemptId;
+        if (command.ExpectedProvider is { } expected)
+        {
+            if (transaction.Routing?.CurrentProvider.ProviderId != expected)
+            {
+                return RansysError.Validation(
+                    ErrorCodes.ProviderMismatch, $"Provider {expected} is not the current provider for transaction {transaction.Id}.");
+            }
+
+            var attemptsResult = await _attemptStore.GetByTransactionAsync(session, transaction.Id, cancellationToken);
+            if (attemptsResult.IsFailure)
+            {
+                return attemptsResult.Error;
+            }
+
+            var matched = attemptsResult.Value
+                .Where(a => a.Provider.ProviderId == expected)
+                .OrderByDescending(a => a.AttemptNumber)
+                .FirstOrDefault();
+            if (matched is null)
+            {
+                return RansysError.Validation(
+                    ErrorCodes.ProviderMismatch, $"No attempt on transaction {transaction.Id} targets provider {expected}.");
+            }
+
+            effectiveAttemptId = matched.Id;
+            if (!matched.IsOutcomeRecorded && command.Evidence is not null)
+            {
+                var recorded = await _attemptService.RecordOutcomeAsync(session, matched, command.Evidence, cancellationToken);
+                if (recorded.IsFailure)
+                {
+                    return recorded.Error;
+                }
+            }
+        }
+
+        var context = TransitionContext.Create(
+            command.ReasonCode, command.Source, _clock.UtcNow, command.ReasonDescription, effectiveAttemptId, command.ResponseCode);
+        if (context.IsFailure)
+        {
+            return context.Error;
+        }
 
         var previous = transaction.ProcessingStatus;
         var transition = command.Resolution switch
@@ -149,6 +202,13 @@ public sealed class TransactionFinalizationService
         if (ledger.IsFailure)
         {
             return ledger.Error;
+        }
+
+        // ADR-027: the transaction the callback directly targets (the child itself, for a child callback) gets the
+        // latest-evidence projection; the parent (if any) is updated by its own helper below when it applies.
+        if (command.Evidence is not null)
+        {
+            transaction.RecordLatestProviderResult(command.Evidence, command.Source, _clock.UtcNow);
         }
 
         var saved = await _transactions.UpdateAsync(session, transaction, cancellationToken);

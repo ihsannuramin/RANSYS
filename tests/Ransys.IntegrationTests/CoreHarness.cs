@@ -43,12 +43,11 @@ internal sealed class CoreHarness
         Attempts = new TransactionAttemptService(AttemptStore, clock, ids);
         Recovery = new AttemptRecoveryService(Transactions, AttemptStore, Attempts, Ledger, new PostgresOutboxWriter(), clock, ids);
         Finalization = new TransactionFinalizationService(
-            new PostgresSessionFactory(db.DataSource), Transactions, Ledger, new PostgresOutboxWriter(), clock, ids);
+            new PostgresSessionFactory(db.DataSource), Transactions, Ledger, new PostgresOutboxWriter(), clock, ids, AttemptStore, Attempts);
         Reversals = new ReversalService(
             Transactions, new IdempotencyService(new PostgresIdempotencyStore(), clock, ids), new PostgresRoutingStore(),
             new PostgresOutboxWriter(), clock, ids);
-        CallbackSink = new ProviderCallbackSink(
-            new PostgresSessionFactory(db.DataSource), Transactions, AttemptStore, Attempts, Finalization, clock);
+        CallbackSink = new ProviderCallbackSink(new PostgresSessionFactory(db.DataSource), Finalization, clock);
     }
 
     public ProviderCallbackSink CallbackSink { get; }

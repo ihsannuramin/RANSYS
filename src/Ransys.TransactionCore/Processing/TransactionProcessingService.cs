@@ -610,7 +610,8 @@ public sealed class TransactionProcessingService(
         }
 
         return new Prepared(
-            childTransaction, attempt.Value, original.Value, OriginalProviderReferences.From(originalAttempts.Value), productCode, null, IsReplay: false);
+            childTransaction, attempt.Value, original.Value,
+            OriginalProviderReferences.From(original.Value!, originalAttempts.Value), productCode, null, IsReplay: false);
     }
 
     private static RansysError OriginalInvalid() =>
@@ -707,9 +708,11 @@ public sealed class TransactionProcessingService(
     {
         if (prepared.Attempt is null)
         {
-            // Replay (R4/ADR-026): the latest resolved attempt's business response data, not an empty object, so a
-            // merchant retry of an already-completed inquiry/payment still gets back the same data it was promised.
-            return Build(prepared.Transaction, prepared.LatestOutcome, prepared.LatestOutcome?.Data ?? NoData, prepared.IsReplay);
+            // Replay (R4/ADR-026, ADR-027): prefer the transaction's latest-provider-result projection (a later/final
+            // async report, e.g. a callback that arrived after the resolving attempt's outcome was already immutable)
+            // over the latest resolved attempt's own data, so a merchant retry never loses business data to either.
+            var data = prepared.Transaction.LatestProviderResult?.Evidence.Data ?? prepared.LatestOutcome?.Data ?? NoData;
+            return Build(prepared.Transaction, prepared.LatestOutcome, data, prepared.IsReplay);
         }
 
         var transaction = prepared.Transaction;

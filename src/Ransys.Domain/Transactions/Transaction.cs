@@ -6,6 +6,14 @@ using Ransys.Domain.Routing;
 
 namespace Ransys.Domain.Transactions;
 
+/// <summary>
+/// The most recent provider evidence reported for this transaction from any source (ADR-027), separate from the
+/// immutable per-attempt outcome (ADR-005). Always overwritable: a later report replaces an earlier one so GET,
+/// replay and child requests can see the latest business-facing reference/data even after the attempt outcome that
+/// first resolved the transaction is already immutable.
+/// </summary>
+public sealed record TransactionResultProjection(AttemptOutcome Evidence, ChangeSource Source, DateTimeOffset RecordedAt);
+
 /// <summary>Input for <see cref="Transaction.Create"/>.</summary>
 public sealed record TransactionDraft(
     TransactionIdentity Identity,
@@ -96,6 +104,12 @@ public sealed class Transaction
 
     public TransactionConfigurationSnapshot Configuration { get; private set; } = TransactionConfigurationSnapshot.None;
 
+    /// <summary>
+    /// ADR-027: the latest provider evidence reported for this transaction, from any source. A plain overwritable
+    /// projection, not a status dimension: changing it produces no <see cref="StateChange"/> / history row.
+    /// </summary>
+    public TransactionResultProjection? LatestProviderResult { get; private set; }
+
     public ExtensionMetadata Metadata { get; }
 
     public ProcessingStatus ProcessingStatus { get; private set; }
@@ -181,6 +195,7 @@ public sealed class Transaction
             ReserveAmount = snapshot.ReserveAmount,
             Routing = snapshot.Routing,
             Configuration = snapshot.Configuration,
+            LatestProviderResult = snapshot.LatestProviderResult,
             ProcessingStatus = snapshot.ProcessingStatus,
             FinancialStatus = snapshot.FinancialStatus,
             ReconciliationStatus = snapshot.ReconciliationStatus,
@@ -390,6 +405,17 @@ public sealed class Transaction
         Routing = next.Value;
         UpdatedAt = occurredAt;
         return Result.Success();
+    }
+
+    /// <summary>
+    /// ADR-027: records the latest provider evidence for this transaction, from any source. Always overwrites any
+    /// previous projection (it is not immutable history like <see cref="TransactionAttempt"/>'s outcome); does not
+    /// touch processing/financial/reconciliation/settlement status and produces no <see cref="StateChange"/>.
+    /// </summary>
+    public void RecordLatestProviderResult(AttemptOutcome evidence, ChangeSource source, DateTimeOffset recordedAt)
+    {
+        ArgumentNullException.ThrowIfNull(evidence);
+        LatestProviderResult = new TransactionResultProjection(evidence, source, recordedAt);
     }
 
     /// <summary>

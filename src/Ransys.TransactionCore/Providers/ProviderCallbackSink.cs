@@ -4,8 +4,8 @@ using Ransys.Application;
 using Ransys.Domain;
 using Ransys.Domain.Attempts;
 using Ransys.Domain.Common;
+using Ransys.Domain.Routing;
 using Ransys.Domain.Transactions;
-using Ransys.TransactionCore.Attempts;
 using Ransys.TransactionCore.Finalization;
 
 namespace Ransys.TransactionCore.Providers;
@@ -20,6 +20,14 @@ namespace Ransys.TransactionCore.Providers;
 /// void this is the <b>child</b> id, not the original payment's id (the child's own request is what the provider
 /// answers; the effect on the original follows from finalizing the child, ADR-012/023/019).
 /// </para>
+/// <para>
+/// Lock order (ADR-027, RR1): the sink itself never locks any row. It only interprets the callback and hands
+/// <see cref="ProviderResultCommand.ExpectedProvider"/> / <see cref="ProviderResultCommand.Evidence"/> to
+/// <see cref="TransactionFinalizationService.ApplyAsync(IDatabaseSession, ProviderResultCommand, CancellationToken)"/>,
+/// which is the only place that locks the transaction (parent before child, ADR-012/023/019) and correlates the
+/// provider to its attempt under that lock. A callback and the sync completion path for the same child therefore
+/// always take locks in the same order and cannot deadlock against each other.
+/// </para>
 /// Acknowledgements:
 /// <list type="bullet">
 /// <item>applied, duplicate (no change) or contradicting (reconciliation EXCEPTION recorded) ⇒ <c>Accepted = true</c>;</item>
@@ -32,9 +40,6 @@ namespace Ransys.TransactionCore.Providers;
 /// </summary>
 public sealed class ProviderCallbackSink(
     IDatabaseSessionFactory sessions,
-    ITransactionRepository transactions,
-    ITransactionAttemptStore attemptStore,
-    TransactionAttemptService attemptService,
     TransactionFinalizationService finalization,
     IClock clock) : IProviderCallbackSink
 {
@@ -65,46 +70,8 @@ public sealed class ProviderCallbackSink(
 
         try
         {
-            // A single continuous lock for the whole method: no unlocked read is ever acted on below (R1).
             await using var session = await sessions.BeginAsync(cancellationToken);
             var id = new TransactionId(callback.OriginalRansysTransactionId);
-            var loaded = await transactions.GetAsync(session, id, forUpdate: true, cancellationToken);
-            if (loaded.IsFailure || loaded.Value is not { } transaction)
-            {
-                return new ProviderCallbackAck(false, loaded.IsFailure ? Rejected : UnknownTransaction);
-            }
-
-            // A provider may only report on requests routed to it. Race-free: the row is locked above.
-            if (transaction.Routing?.CurrentProvider.ProviderId != new ProviderId(callback.ProviderId))
-            {
-                return new ProviderCallbackAck(false, ProviderMismatch);
-            }
-
-            // Correlate to the attempt the provider actually answered, and persist its evidence exactly once (ADR-005/R2):
-            // provider reference/STAN/RRN must be durable before children (reversal/refund/void) or GET can rely on them.
-            var attempts = await attemptStore.GetByTransactionAsync(session, id, cancellationToken);
-            if (attempts.IsFailure)
-            {
-                return new ProviderCallbackAck(false, Rejected);
-            }
-
-            var attempt = attempts.Value
-                .Where(a => a.Provider.ProviderId == new ProviderId(callback.ProviderId))
-                .OrderByDescending(a => a.AttemptNumber)
-                .FirstOrDefault();
-            if (attempt is null)
-            {
-                return new ProviderCallbackAck(false, ProviderMismatch);
-            }
-
-            if (!attempt.IsOutcomeRecorded)
-            {
-                var recorded = await attemptService.RecordOutcomeAsync(session, attempt, interpreted.Outcome, cancellationToken);
-                if (recorded.IsFailure)
-                {
-                    return new ProviderCallbackAck(false, Rejected);
-                }
-            }
 
             var applied = await finalization.ApplyAsync(
                 session,
@@ -114,12 +81,24 @@ public sealed class ProviderCallbackSink(
                     ChangeSource.Callback,
                     "CALLBACK_" + interpreted.ReasonCode,
                     interpreted.ResponseCode,
-                    AttemptId: attempt.Id,
-                    ReasonDescription: callback.CallbackId is { Length: > 0 and <= 400 } callbackId ? $"Provider callback {callbackId}" : null),
+                    AttemptId: null,
+                    ReasonDescription: callback.CallbackId is { Length: > 0 and <= 400 } callbackId ? $"Provider callback {callbackId}" : null,
+                    ExpectedProvider: new ProviderId(callback.ProviderId),
+                    Evidence: interpreted.Outcome),
                 cancellationToken);
 
             if (applied.IsFailure)
             {
+                if (applied.Error.Code == ErrorCodes.TransactionNotFound)
+                {
+                    return new ProviderCallbackAck(false, UnknownTransaction);
+                }
+
+                if (applied.Error.Code == ErrorCodes.ProviderMismatch)
+                {
+                    return new ProviderCallbackAck(false, ProviderMismatch);
+                }
+
                 // PENDING / IN_DOUBT after a final result is an out-of-order report: acknowledge, change nothing.
                 return applied.Error.Code == ErrorCodes.InvalidStateTransition
                        && interpreted.Resolution is AttemptResolutionKind.Pending or AttemptResolutionKind.InDoubt

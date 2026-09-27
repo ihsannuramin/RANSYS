@@ -67,7 +67,7 @@ internal sealed class ProcessingHarness
         var ledger = new LedgerPostingService(new PostgresLedgerStore(new ReferenceDataStore()), new PostgresOutboxWriter(), clock, ids);
         var configuration = new ConfigurationService(new PostgresConfigVersionStore(), clock);
         var routingStore = new PostgresRoutingStore();
-        var finalization = new TransactionFinalizationService(sessions, transactions, ledger, new PostgresOutboxWriter(), clock, ids);
+        var finalization = new TransactionFinalizationService(sessions, transactions, ledger, new PostgresOutboxWriter(), clock, ids, attemptStore, attempts);
 
         Service = new TransactionProcessingService(
             sessions,

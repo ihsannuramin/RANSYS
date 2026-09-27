@@ -42,6 +42,12 @@ public static class ErrorCodes
     public const string AttemptNotAllowed = "ATTEMPT_NOT_ALLOWED";
     public const string AttemptNotFound = "ATTEMPT_NOT_FOUND";
 
+    /// <summary>A provider result command named a provider that is not the transaction's current routed provider.</summary>
+    public const string ProviderMismatch = "PROVIDER_MISMATCH";
+
+    /// <summary>Finalization was asked to apply a result to a transaction id that does not exist.</summary>
+    public const string TransactionNotFound = "TRANSACTION_NOT_FOUND";
+
     public const string InvalidStateTransition = "INVALID_STATE_TRANSITION";
     public const string InsufficientBalance = "INSUFFICIENT_BALANCE";
     public const string WalletNotFound = "WALLET_NOT_FOUND";

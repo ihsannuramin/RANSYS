@@ -43,6 +43,24 @@ public sealed record OriginalProviderReferences(string? ProviderReference, strin
             .FirstOrDefault();
         return outcome is null ? None : new(outcome.ProviderReference, outcome.ProviderStan, outcome.ProviderRrn);
     }
+
+    /// <summary>
+    /// ADR-027: prefers the original transaction's latest-provider-result projection (a later/final async report,
+    /// e.g. a callback that arrived after the attempt outcome that first resolved the original was already
+    /// immutable) over the per-attempt scan, which only sees the outcome recorded at the time.
+    /// </summary>
+    public static OriginalProviderReferences From(Transaction original, IEnumerable<TransactionAttempt> originalAttempts)
+    {
+        ArgumentNullException.ThrowIfNull(original);
+
+        if (original.LatestProviderResult?.Evidence is { } evidence
+            && (evidence.ProviderReference ?? evidence.ProviderStan ?? evidence.ProviderRrn) is not null)
+        {
+            return new(evidence.ProviderReference, evidence.ProviderStan, evidence.ProviderRrn);
+        }
+
+        return From(originalAttempts);
+    }
 }
 
 /// <summary>

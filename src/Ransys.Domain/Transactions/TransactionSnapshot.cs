@@ -24,6 +24,7 @@ public sealed record TransactionSnapshot(
     TransactionReferences References,
     RoutingDecision? Routing,
     TransactionConfigurationSnapshot Configuration,
+    TransactionResultProjection? LatestProviderResult,
     ExtensionMetadata Metadata,
     ProcessingStatus ProcessingStatus,
     FinancialStatus FinancialStatus,
