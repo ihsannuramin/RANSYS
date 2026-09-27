@@ -101,6 +101,31 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 
 Cross-component concurrency (main.md §22) is covered by `tests/Ransys.IntegrationTests/Concurrency/CrossComponentConcurrencyTests.cs`: duplicate provider results from several sources, status check vs reconciliation with contradicting results, callback vs recovery worker, and concurrent reservations with finalizations on one wallet (lock-order / deadlock check).
 
+## Merchant API (OpenAPI v1) and Provider Adapter Contract v1 — Milestone 12
+
+Contracts: `docs/RANSYS_OpenAPI_v1.yaml`, `docs/RANSYS_Provider_Adapter_Contract_v1.md`, `docs/RANSYS_Provider_Adapter_v1.proto`, `docs/RANSYS_Provider_Adapter_Contracts_v1.cs`.
+
+- **Endpoints** (`src/Ransys.Api`): `POST /api/v1/{inquiries,payments,transfers,refunds,reversals,voids}` and `GET /api/v1/transactions/{ransysTransactionId}`. DTOs in `Contracts/V1` mirror the OpenAPI schemas. Money is a decimal string, and unknown JSON properties are rejected. HTTP 200 means the request entered processing; the business result is `transactionStatus` plus `responseCode` (ADR-021).
+- **Security** (ADR-022, proposed): production authentication fails closed (401). A development authenticator (`X-Ransys-Client-Id` = channel UUID, timestamp window, nonce, `Content-Digest`) is allowed only in Development/Test with `Ransys:Auth:AllowDevelopmentAuthentication=true`. Signature verification (`ISignatureVerifier`) still needs the signature profile.
+- **Processing**: `TransactionProcessingService` persists the transaction, idempotency claim, fee (ADR-020), reserve, route and attempt **before** calling the provider. It calls the provider outside any DB transaction, then records and finalizes the result. If the database is unavailable the API returns 503 and never calls the provider.
+- **Child transactions**: reversal (ADR-012), refund (ADR-023/024) and void (ADR-019: fail closed, reconciliation exception) are children with their own id. Starting one never overwrites the original.
+- **Provider adapters**: the contract is in `Ransys.Adapter.Contracts.V1` and the gRPC binding in `Ransys.Adapter.Sdk`, with the same semantics as the in-process binding. Core uses `IProviderAdapterResolver` (`InProcessProviderAdapterRegistry`), `ProviderResultInterpreter` (conservative `RequestSent`) and `ProviderCallbackSink` (idempotent callbacks).
+- **Running locally**: `dotnet user-secrets set "ConnectionStrings:TransactionDb" "<connection string>" --project src/Ransys.Api`. No real provider adapter is registered yet.
+
+| Handoff §31 criterion | Status |
+|---|---|
+| OpenAPI v1 endpoints implemented, DTOs match YAML | Met (`tests/Ransys.Api.Tests` contract tests compare DTOs with the YAML schemas) |
+| DTOs do not leak persistence/domain internals | Met |
+| Decimal string amounts map safely to decimal | Met |
+| Reversal / refund child transactions; VOID independent | Met (ADR-012, ADR-023, ADR-019) |
+| Provider Adapter Contract v1 and protobuf compile | Met (build; proto byte-equal to the doc) |
+| `requestSent` safety preserved; adapter cannot mutate financial state | Met (ADR-005, `ProviderResultRules`, dependency rules) |
+| Callback ingress idempotency-ready | Met (`ProviderCallbackSink`) |
+| `dotnet build` / `dotnet test` pass | Met: 0 warnings, 1,439 tests |
+| Conflicts documented as ADRs | ADR-018 … ADR-024 |
+
+Remaining TODOs: Response Code Catalog v1 (only approved codes are used; frozen wallet and unmapped failures fall back to 1001), the signature profile and production authenticator, real provider adapters and their configuration, inquiry default currency, a hosted recovery worker schedule, outbox consumers (Backoffice), the circuit breaker, and the final VOID financial semantics (ADR-019).
+
 ## Architecture decisions
 
 All decisions are recorded in [`docs/decisions/`](docs/decisions/) (ADR-001 … ADR-020, ADR-023, ADR-024).

@@ -46,6 +46,12 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 - Adjustments and manual refunds require an approval request id (maker-checker). A refund carries an explicit `RefundAuthorization` (ADR-024): `ApprovedRequest(approvalId)` for manual refunds, or `MerchantApiRequest` bound to its own REFUND child (created only by finalization). Total refunds can never exceed the posted amount. Debit adjustments can never make a balance negative.
 - `PostgresLedgerStore` only inserts journals and never updates them (ADR-002). Ledger DB tests (`tests/Ransys.Ledger.Tests`) assert that the wallet projection equals the projection rebuilt from ledger entries. Keep that check in new scenarios.
 
+## Merchant API (OpenAPI v1)
+
+- `docs/RANSYS_OpenAPI_v1.yaml` is authoritative. API DTOs (`src/Ransys.Api/Contracts/V1`) must match it exactly, which `tests/Ransys.Api.Tests` contract tests enforce. Never expose domain or persistence types, provider topology, posting keys, reservation ids, row versions or raw-message URIs.
+- The flow is DTO → command → `TransactionProcessingService` → result → response DTO. HTTP status follows ADR-021: 200 for every business outcome, 400 validation (2001), 401 auth (3001), 409 duplicate conflict (2003), 503 financial dependency unavailable. Use only approved response codes until the Response Code Catalog exists.
+- Authentication fails closed in production (ADR-022). The development authenticator is allowed only in Development/Test behind `Ransys:Auth:AllowDevelopmentAuthentication`. Nonce ≠ Idempotency-Key ≠ clientReference ≠ fingerprint.
+
 ## Finalization (applying provider results)
 
 - Every provider result for the original request goes through `TransactionFinalizationService.ApplyAsync` (`src/Ransys.TransactionCore/Finalization`), whatever the source: sync response, callback, status check, advice, reconciliation. It locks the transaction row, applies the aggregate transition, executes the requested ledger action (POST / RELEASE, hold reason for IN_DOUBT), updates with `row_version`, and enqueues a `TRANSACTION` status event, all in one session. Don't write parallel paths that call the ledger directly for provider results.
