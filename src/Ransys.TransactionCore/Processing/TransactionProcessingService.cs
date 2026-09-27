@@ -185,6 +185,21 @@ public sealed class TransactionProcessingService(
             return RansysError.Validation(ErrorCodes.Required, "productCode is required.", "productCode");
         }
 
+        // ADR-025: look for an existing claim before resolving any "currently active" reference data. A legitimate
+        // retry of the same payload must replay the original transaction even if the product has since gone
+        // INACTIVE or a new currency definition version has since become active — those are not the merchant's
+        // payload changing.
+        var peeked = await idempotency.PeekActiveAsync(session, request.ChannelId, request.ClientReference, cancellationToken);
+        if (peeked.IsFailure)
+        {
+            return peeked.Error;
+        }
+
+        if (peeked.Value is { } existingClaim)
+        {
+            return await ResolveReplayAsync(session, request, existingClaim, cancellationToken);
+        }
+
         var product = await referenceData.FindActiveProductByCodeAsync(session, request.ProductCode, cancellationToken);
         if (product is null)
         {
@@ -274,6 +289,62 @@ public sealed class TransactionProcessingService(
 
         return new Prepared(transaction, attempt, null, OriginalProviderReferences.None, product.ProductCode, null, IsReplay: false);
     }
+
+    /// <summary>
+    /// An active claim already exists for this channel + client reference (ADR-025). Compare the request against the
+    /// <em>original transaction's own snapshot</em> — never against currently-active reference data, which can have
+    /// drifted (product deactivated, a new currency definition version active) since the original request without the
+    /// merchant's payload changing. A genuine payload mismatch (different product, different currency, or any other
+    /// fingerprinted field) is <see cref="ErrorCodes.DuplicateReferenceConflict"/>; an identical payload replays the
+    /// original transaction, with no product/currency/wallet resolution and no new claim.
+    /// </summary>
+    private async Task<Result<Prepared>> ResolveReplayAsync(
+        IDatabaseSession session, OriginalRequest request, ExistingClaim claim, CancellationToken cancellationToken)
+    {
+        var existing = await LoadAsync(session, claim.TransactionId, cancellationToken);
+        if (existing.IsFailure)
+        {
+            return existing.Error;
+        }
+
+        var existingTransaction = existing.Value;
+        var productId = await referenceData.FindProductIdByCodeAsync(session, request.ProductCode, cancellationToken);
+        var currencyMismatch = request.Amount is { } amountInput
+            && !string.Equals(amountInput.Currency, existingTransaction.Amount.CurrencyCode, StringComparison.Ordinal);
+        if (productId is null || productId != existingTransaction.ProductId || currencyMismatch)
+        {
+            return DuplicateReferenceConflict(request.ClientReference);
+        }
+
+        var candidateAmount = Money.Create(request.Amount?.Value ?? 0m, existingTransaction.Amount.Currency);
+        if (candidateAmount.IsFailure)
+        {
+            return candidateAmount.Error with { Field = "amount.value" };
+        }
+
+        var candidateSource = ToEndpoint(request.Source, "source");
+        var candidateDestination = ToEndpoint(request.Destination, "destination");
+        var endpointError = candidateSource.IsFailure ? candidateSource.Error : candidateDestination.IsFailure ? candidateDestination.Error : (RansysError?)null;
+        if (endpointError is { } error)
+        {
+            return error;
+        }
+
+        var candidateFingerprint = TransactionFingerprint.Compute(new FingerprintInput(
+            request.MerchantId, request.ChannelId, request.Type, existingTransaction.ProductId,
+            candidateSource.Value, candidateDestination.Value, candidateAmount.Value, request.ClientReference));
+
+        if (candidateFingerprint != claim.Fingerprint)
+        {
+            return DuplicateReferenceConflict(request.ClientReference);
+        }
+
+        return await ReplayAsync(session, claim.TransactionId, request.Type, expectedOriginal: null, cancellationToken);
+    }
+
+    private static RansysError DuplicateReferenceConflict(string clientReference) =>
+        RansysError.Conflict(
+            ErrorCodes.DuplicateReferenceConflict, $"Client reference '{clientReference}' was already used with a different payload.");
 
     /// <summary>
     /// Runs inside the idempotency claim (savepoint). Returns the started attempt, or null when the transaction was

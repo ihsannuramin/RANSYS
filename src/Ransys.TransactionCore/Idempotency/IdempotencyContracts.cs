@@ -28,6 +28,13 @@ public enum IdempotencyOutcome
 
 public sealed record IdempotencyDecision(IdempotencyOutcome Outcome, TransactionId TransactionId);
 
+/// <summary>
+/// An active, unexpired idempotency claim (<see cref="IdempotencyService.PeekActiveAsync"/>), before any fingerprint
+/// comparison. Callers that need to anchor a replay to the original transaction's own snapshot (ADR-025) read
+/// <see cref="TransactionId"/> and compare against a fingerprint they compute themselves.
+/// </summary>
+public sealed record ExistingClaim(TransactionId TransactionId, TransactionFingerprint Fingerprint);
+
 /// <summary>Persistence port for <c>core.idempotency_records</c>.</summary>
 public interface IIdempotencyStore
 {

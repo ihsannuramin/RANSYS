@@ -31,6 +31,15 @@ public sealed class PostgresReferenceDataReader : IReferenceDataReader
             new { Id = productId.Value }, s.Transaction, cancellationToken: cancellationToken));
     }
 
+    public async Task<ProductId?> FindProductIdByCodeAsync(IDatabaseSession session, string productCode, CancellationToken cancellationToken = default)
+    {
+        var s = PostgresSessionCast.From(session);
+        var id = await s.Connection.QuerySingleOrDefaultAsync<Guid?>(new CommandDefinition(
+            "SELECT product_id FROM core.products WHERE product_code = @Code",
+            new { Code = productCode }, s.Transaction, cancellationToken: cancellationToken));
+        return id is { } value ? new ProductId(value) : null;
+    }
+
     public async Task<Result<CurrencyDefinition?>> FindActiveCurrencyAsync(
         IDatabaseSession session, string currencyCode, DateTimeOffset at, CancellationToken cancellationToken = default)
     {

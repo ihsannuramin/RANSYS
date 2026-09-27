@@ -212,6 +212,76 @@ public sealed class TransactionProcessingTests(PostgresDatabaseFixture db)
         Assert.Equal(1, s.Adapter.CallCount);
     }
 
+    // R3 (Architecture Review) / ADR-025: an idempotent replay must anchor to the original transaction's own
+    // snapshot, not to reference data that can drift (product deactivated, a new currency definition version
+    // active) between the original request and a legitimate retry of the same payload within the 24h window.
+
+    [Fact]
+    public async Task Replay_after_the_product_is_deactivated_still_returns_the_original_result()
+    {
+        var s = await _h.NewScenario();
+        var command = Payment(s, 100_000m);
+        var first = Ok(await _h.Service.PayAsync(command));
+
+        await _h.Execute("UPDATE core.products SET status = 'INACTIVE' WHERE product_id = @id", new { id = s.Product.Value });
+
+        var retry = Ok(await _h.Service.PayAsync(command with { RequestTimestamp = DateTimeOffset.UtcNow.AddSeconds(5) }));
+
+        Assert.Equal(first.TransactionId, retry.TransactionId);
+        Assert.Equal((ProcessingStatus.Success, "0000", true), (retry.ProcessingStatus, retry.ResponseCode, retry.IsReplay));
+        Assert.Equal(first.References.Rrn, retry.References.Rrn);
+        Assert.Equal(1, s.Adapter.CallCount);
+        Assert.Equal((900_000m, 900_000m, 0m), await _h.Balances(s.Wallet));
+    }
+
+    [Fact]
+    public async Task Replay_after_a_new_currency_definition_version_becomes_active_still_returns_the_original_result()
+    {
+        var s = await _h.NewScenario();
+        var command = Payment(s, 100_000m);
+        var first = Ok(await _h.Service.PayAsync(command));
+
+        // A new IDR version becomes ACTIVE; the merchant has no wallet under it yet. If replay resolved live
+        // reference data (the bug this test guards against), the retry would fail WALLET_NOT_FOUND instead of
+        // returning the original result. "IDR" is shared across every test in this collection, so the inserted
+        // version is removed again in `finally` — otherwise every other scenario's currency resolution would pick
+        // it up (it is the highest version_no) for the rest of the run.
+        var newVersionId = Guid.CreateVersion7();
+        await _h.Execute(
+            """
+            INSERT INTO core.currency_definitions
+                (currency_definition_id, currency_code, version_no, scale, conversion_ratio, effective_from, effective_until, status, created_at)
+            VALUES (@id, 'IDR', 2, 2, NULL, now(), NULL, 'ACTIVE', now())
+            """,
+            new { id = newVersionId });
+        try
+        {
+            var retry = Ok(await _h.Service.PayAsync(command with { RequestTimestamp = DateTimeOffset.UtcNow.AddSeconds(5) }));
+
+            Assert.Equal(first.TransactionId, retry.TransactionId);
+            Assert.Equal((ProcessingStatus.Success, "0000", true), (retry.ProcessingStatus, retry.ResponseCode, retry.IsReplay));
+            Assert.Equal(1, s.Adapter.CallCount);
+        }
+        finally
+        {
+            await _h.Execute("DELETE FROM core.currency_definitions WHERE currency_definition_id = @id", new { id = newVersionId });
+        }
+    }
+
+    [Fact]
+    public async Task Retry_with_a_different_product_code_is_still_a_duplicate_conflict()
+    {
+        var s = await _h.NewScenario();
+        var other = await _h.NewScenario();
+        var command = Payment(s, 100_000m);
+        Ok(await _h.Service.PayAsync(command));
+
+        var conflict = await _h.Service.PayAsync(command with { ProductCode = other.ProductCode });
+
+        Assert.Equal(ErrorCodes.DuplicateReferenceConflict, conflict.Error.Code);
+        Assert.Equal(1, s.Adapter.CallCount);
+    }
+
     [Fact]
     public async Task Inquiry_calls_inquiry_without_amount_and_returns_provider_data()
     {

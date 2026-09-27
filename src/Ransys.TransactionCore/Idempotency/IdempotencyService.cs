@@ -102,13 +102,54 @@ public sealed class IdempotencyService
     }
 
     /// <summary>
+    /// Peeks the active, unexpired claim for channel + client reference, without comparing any fingerprint (ADR-025).
+    /// Null when the reference is free (expiring a stale claim lazily in the same session, ADR-009). Callers that need
+    /// to decide whether a request is a legitimate replay must build their own candidate fingerprint from the
+    /// <em>original transaction's own snapshot</em> (not live reference data) and compare it against
+    /// <see cref="ExistingClaim.Fingerprint"/> themselves — this method never resolves that on its own.
+    /// </summary>
+    public Task<Result<ExistingClaim?>> PeekActiveAsync(
+        IDatabaseSession session, ChannelId channelId, string clientReference, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        ArgumentException.ThrowIfNullOrWhiteSpace(clientReference);
+        return PeekActiveAsync(session, channelId, clientReference, _clock.UtcNow, cancellationToken);
+    }
+
+    /// <summary>
     /// Returns a decision when an active, unexpired claim exists; null when the reference is free
     /// (expiring a stale claim lazily in the same session, ADR-009).
     /// </summary>
     private async Task<Result<IdempotencyDecision?>> ResolveExistingAsync(
         IDatabaseSession session, ChannelId channelId, TransactionIdentity identity, DateTimeOffset now, CancellationToken cancellationToken)
     {
-        var found = await _store.FindActiveAsync(session, channelId, identity.ClientReference, cancellationToken);
+        var peek = await PeekActiveAsync(session, channelId, identity.ClientReference, now, cancellationToken);
+        if (peek.IsFailure)
+        {
+            return peek.Error;
+        }
+
+        if (peek.Value is not { } claim)
+        {
+            return Result<IdempotencyDecision?>.Success(null);
+        }
+
+        // Fingerprints are only comparable within one algorithm version (ADR-006). A version mismatch cannot prove
+        // "same payload", so it is treated as a conflict: fail closed rather than process a possible duplicate.
+        if (claim.Fingerprint != identity.Fingerprint)
+        {
+            return RansysError.Conflict(
+                ErrorCodes.DuplicateReferenceConflict,
+                $"Client reference '{identity.ClientReference}' was already used with a different payload.");
+        }
+
+        return new IdempotencyDecision(IdempotencyOutcome.ExistingTransaction, claim.TransactionId);
+    }
+
+    private async Task<Result<ExistingClaim?>> PeekActiveAsync(
+        IDatabaseSession session, ChannelId channelId, string clientReference, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        var found = await _store.FindActiveAsync(session, channelId, clientReference, cancellationToken);
         if (found.IsFailure)
         {
             return found.Error;
@@ -116,24 +157,15 @@ public sealed class IdempotencyService
 
         if (found.Value is not { } record)
         {
-            return Result<IdempotencyDecision?>.Success(null);
+            return Result<ExistingClaim?>.Success(null);
         }
 
         if (record.ExpiresAt <= now)
         {
             await _store.ExpireAsync(session, record.Id, now, cancellationToken);
-            return Result<IdempotencyDecision?>.Success(null);
+            return Result<ExistingClaim?>.Success(null);
         }
 
-        // Fingerprints are only comparable within one algorithm version (ADR-006). A version mismatch cannot prove
-        // "same payload", so it is treated as a conflict: fail closed rather than process a possible duplicate.
-        if (record.Fingerprint != identity.Fingerprint)
-        {
-            return RansysError.Conflict(
-                ErrorCodes.DuplicateReferenceConflict,
-                $"Client reference '{identity.ClientReference}' was already used with a different payload.");
-        }
-
-        return new IdempotencyDecision(IdempotencyOutcome.ExistingTransaction, record.TransactionId);
+        return new ExistingClaim(record.TransactionId, record.Fingerprint);
     }
 }

@@ -23,6 +23,13 @@ public interface IReferenceDataReader
     Task<string?> FindProductCodeAsync(IDatabaseSession session, ProductId productId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// The id of the product with <paramref name="productCode"/>, whatever its status (any status; existence only). Used
+    /// to compare an idempotent replay's payload against the original transaction's own product, which must not depend
+    /// on whether the product is still ACTIVE now (ADR-025).
+    /// </summary>
+    Task<ProductId?> FindProductIdByCodeAsync(IDatabaseSession session, string productCode, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// The ACTIVE currency definition for <paramref name="currencyCode"/> effective at <paramref name="at"/> (highest version
     /// when several overlap); null when none. Public clients never send a definition version (OpenAPI v1 §5).
     /// </summary>
