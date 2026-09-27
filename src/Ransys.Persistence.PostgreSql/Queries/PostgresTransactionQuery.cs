@@ -23,8 +23,8 @@ public sealed class PostgresTransactionQuery : ITransactionQuery
             SELECT t.ransys_transaction_id, t.original_transaction_id, t.channel_id, t.client_reference, t.transaction_type,
                    t.processing_status, t.financial_status, t.reconciliation_status, t.settlement_status,
                    t.ransys_response_code, t.canonical_detail -> 'references' ->> 'merchantReference' AS merchant_reference,
-                   COALESCE(t.latest_result_provider_stan, a.provider_stan) AS provider_stan,
-                   COALESCE(t.latest_result_provider_rrn, a.provider_rrn) AS provider_rrn,
+                   CASE WHEN t.latest_result_recorded_at IS NOT NULL THEN t.latest_result_provider_stan ELSE a.provider_stan END AS provider_stan,
+                   CASE WHEN t.latest_result_recorded_at IS NOT NULL THEN t.latest_result_provider_rrn ELSE a.provider_rrn END AS provider_rrn,
                    t.received_at, t.completed_at
             FROM core.transactions t
             LEFT JOIN LATERAL (

@@ -195,16 +195,20 @@ public sealed class TransactionFinalizationService
         var outcome = transition.Value;
         if (outcome.Kind == TransitionKind.NoChange)
         {
-            // T2-A: a duplicate/consistent report of the already-accepted resolution may still carry richer evidence
-            // (e.g. a later callback confirming what sync already recorded, or vice versa) than what's stored so far.
-            // No status/ledger/outbox change is needed — only the evidence projection, if any was supplied.
+            // U1 (ADR-027 revised): a duplicate/consistent report of the already-accepted resolution may still carry
+            // evidence that enriches what's stored so far (same identity, fills blanks, non-empty Data wins over
+            // empty) — but a genuinely different provider reference/STAN/RRN is never silently swapped in, and a
+            // report with no identity at all changes nothing. Only write when the merge actually changed something.
             if (command.Evidence is not null)
             {
-                transaction.RecordLatestProviderResult(command.Evidence, command.Source, _clock.UtcNow);
-                var savedEvidence = await _transactions.UpdateAsync(session, transaction, cancellationToken);
-                if (savedEvidence.IsFailure)
+                var merge = transaction.MergeLatestProviderResult(command.Evidence, command.Source, _clock.UtcNow);
+                if (merge is ProviderResultMergeOutcome.Recorded or ProviderResultMergeOutcome.Enriched)
                 {
-                    return savedEvidence.Error;
+                    var savedEvidence = await _transactions.UpdateAsync(session, transaction, cancellationToken);
+                    if (savedEvidence.IsFailure)
+                    {
+                        return savedEvidence.Error;
+                    }
                 }
             }
 
@@ -217,11 +221,15 @@ public sealed class TransactionFinalizationService
             return ledger.Error;
         }
 
-        // ADR-027: the transaction the callback directly targets (the child itself, for a child callback) gets the
-        // latest-evidence projection; the parent (if any) is updated by its own helper below when it applies. A
+        // ADR-027 (RR3): the transaction the callback directly targets (the child itself, for a child callback) gets
+        // the latest-evidence projection; the parent (if any) is updated by its own helper below when it applies. A
         // conflicting report (TransitionKind.ConflictRecorded) never overwrites the projection: it contradicts the
         // already-accepted resolution, so its evidence is not authoritative — only a genuinely accepted transition
-        // (TransitionKind.Applied) may update what readers treat as the transaction's business result.
+        // (TransitionKind.Applied) may update what readers treat as the transaction's business result. Applied always
+        // *replaces* the projection outright (never merges it against a now-superseded prior status's evidence,
+        // e.g. a temporary PENDING reference genuinely differing from the real final one) — see
+        // Transaction.RecordLatestProviderResult's doc for why this must not go through the NoChange-only merge/U1
+        // conflict check.
         if (outcome.Kind == TransitionKind.Applied && command.Evidence is not null)
         {
             transaction.RecordLatestProviderResult(command.Evidence, command.Source, _clock.UtcNow);

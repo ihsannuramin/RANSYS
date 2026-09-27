@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+using System.Text.Json;
 using Ransys.Domain.Attempts;
 using Ransys.Domain.Common;
 using Ransys.Domain.Transactions;
@@ -404,4 +406,78 @@ public sealed class TransactionAggregateTests
         Assert.Equal(ErrorCodes.TooLong, TransitionContext.Create(new string('R', 65), ChangeSource.Core, T0).Error.Code);
         Assert.Equal(ErrorCodes.InvalidFormat, TransitionContext.Create("X", ChangeSource.Core, T0, responseCode: "00").Error.Code);
     }
+
+    // ---------------------------------------------------------------- U1 (ADR-027 revised): MergeLatestProviderResult
+
+    [Fact]
+    public void MergeLatestProviderResult_records_the_first_evidence_with_no_prior_projection()
+    {
+        var t = NewPayment();
+        var evidence = AttemptOutcome.Create(true, TransportStatus.Response, providerReference: "PRV-A", data: DataOf("field", "A")).Value;
+
+        var outcome = t.MergeLatestProviderResult(evidence, ChangeSource.Callback, T0);
+
+        Assert.Equal(ProviderResultMergeOutcome.Recorded, outcome);
+        Assert.Equal("PRV-A", t.LatestProviderResult!.Evidence.ProviderReference);
+        Assert.Equal("A", FieldOf(t.LatestProviderResult.Evidence.Data, "field"));
+    }
+
+    [Fact]
+    public void MergeLatestProviderResult_enriches_same_identity_and_prefers_non_empty_data()
+    {
+        var t = NewPayment();
+        var first = AttemptOutcome.Create(true, TransportStatus.Response, providerReference: "PRV-A", providerStan: "STAN-A").Value;
+        var second = AttemptOutcome.Create(
+            true, TransportStatus.Response, providerReference: "PRV-A", providerRrn: "RRN-A", data: DataOf("field", "full")).Value;
+
+        Assert.Equal(ProviderResultMergeOutcome.Recorded, t.MergeLatestProviderResult(first, ChangeSource.SyncProviderResponse, T0));
+        var outcome = t.MergeLatestProviderResult(second, ChangeSource.Callback, T0);
+
+        Assert.Equal(ProviderResultMergeOutcome.Enriched, outcome);
+        Assert.Equal(
+            ("PRV-A", "STAN-A", "RRN-A"),
+            (t.LatestProviderResult!.Evidence.ProviderReference, t.LatestProviderResult.Evidence.ProviderStan, t.LatestProviderResult.Evidence.ProviderRrn));
+        Assert.Equal("full", FieldOf(t.LatestProviderResult.Evidence.Data, "field"));
+
+        // A later report with the SAME identity but empty data never erases the richer data already known.
+        var thin = AttemptOutcome.Create(true, TransportStatus.Response, providerReference: "PRV-A").Value;
+        Assert.Equal(ProviderResultMergeOutcome.Enriched, t.MergeLatestProviderResult(thin, ChangeSource.Callback, T0));
+        Assert.Equal("full", FieldOf(t.LatestProviderResult.Evidence.Data, "field"));
+    }
+
+    /// <summary>U1-3: a genuinely different provider reference is never silently swapped in.</summary>
+    [Fact]
+    public void MergeLatestProviderResult_returns_conflicting_identity_for_a_different_reference()
+    {
+        var t = NewPayment();
+        var a = AttemptOutcome.Create(true, TransportStatus.Response, providerReference: "PRV-A").Value;
+        var b = AttemptOutcome.Create(true, TransportStatus.Response, providerReference: "PRV-B").Value;
+
+        var first = t.MergeLatestProviderResult(a, ChangeSource.Callback, T0);
+        var second = t.MergeLatestProviderResult(b, ChangeSource.Callback, T0);
+
+        Assert.Equal(ProviderResultMergeOutcome.Recorded, first);
+        Assert.Equal(ProviderResultMergeOutcome.ConflictingIdentity, second);
+        Assert.Equal("PRV-A", t.LatestProviderResult!.Evidence.ProviderReference);
+    }
+
+    [Fact]
+    public void MergeLatestProviderResult_ignores_a_report_with_no_identity_at_all()
+    {
+        var t = NewPayment();
+        var a = AttemptOutcome.Create(true, TransportStatus.Response, providerReference: "PRV-A").Value;
+        var noIdentity = AttemptOutcome.Create(true, TransportStatus.Response).Value;
+
+        Assert.Equal(ProviderResultMergeOutcome.Recorded, t.MergeLatestProviderResult(a, ChangeSource.Callback, T0));
+        var outcome = t.MergeLatestProviderResult(noIdentity, ChangeSource.Callback, T0);
+
+        Assert.Equal(ProviderResultMergeOutcome.IgnoredNoIdentity, outcome);
+        Assert.Equal("PRV-A", t.LatestProviderResult!.Evidence.ProviderReference);
+    }
+
+    private static IReadOnlyDictionary<string, JsonElement> DataOf(string field, string value) =>
+        ImmutableDictionary<string, JsonElement>.Empty.Add(field, JsonSerializer.SerializeToElement(value));
+
+    private static string? FieldOf(IReadOnlyDictionary<string, JsonElement>? data, string field) =>
+        data is not null && data.TryGetValue(field, out var value) ? value.GetString() : null;
 }

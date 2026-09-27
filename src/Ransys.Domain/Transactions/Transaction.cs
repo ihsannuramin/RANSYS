@@ -14,6 +14,26 @@ namespace Ransys.Domain.Transactions;
 /// </summary>
 public sealed record TransactionResultProjection(AttemptOutcome Evidence, ChangeSource Source, DateTimeOffset RecordedAt);
 
+/// <summary>
+/// Outcome of <see cref="Transaction.MergeLatestProviderResult"/> (ADR-027 revised, U1): tells the caller whether the
+/// accepted-evidence projection changed and how, so a genuinely conflicting later report can be observed instead of
+/// silently applied.
+/// </summary>
+public enum ProviderResultMergeOutcome
+{
+    /// <summary>No projection existed yet; the incoming evidence became the projection.</summary>
+    Recorded,
+
+    /// <summary>Same identity (or no identity established yet); the projection was filled in / enriched.</summary>
+    Enriched,
+
+    /// <summary>The incoming evidence carries no provider identity (reference/STAN/RRN) to merge or compare by.</summary>
+    IgnoredNoIdentity,
+
+    /// <summary>The incoming evidence's provider identity differs from the already-accepted one; nothing changed.</summary>
+    ConflictingIdentity,
+}
+
 /// <summary>Input for <see cref="Transaction.Create"/>.</summary>
 public sealed record TransactionDraft(
     TransactionIdentity Identity,
@@ -408,14 +428,81 @@ public sealed class Transaction
     }
 
     /// <summary>
-    /// ADR-027: records the latest provider evidence for this transaction, from any source. Always overwrites any
-    /// previous projection (it is not immutable history like <see cref="TransactionAttempt"/>'s outcome); does not
-    /// touch processing/financial/reconciliation/settlement status and produces no <see cref="StateChange"/>.
+    /// ADR-027 (RR3): a genuinely new accepted transition (<see cref="TransitionKind.Applied"/>) unconditionally
+    /// replaces the accepted-evidence projection with this report's evidence. This is deliberately <em>not</em>
+    /// merged against whatever was recorded before: an <c>Applied</c> transition means the transaction's true status
+    /// just moved (e.g. a temporary PENDING report superseded by the real final SUCCESS/FAILED one, ADR-027's own
+    /// T2-B scenario), so the evidence describing the arrival at that new status is authoritative for it, even when
+    /// its own provider reference/STAN/RRN legitimately differs from the now-superseded prior status's evidence (a
+    /// provisional reference is not "the same identity" as the final one). Contrast
+    /// <see cref="MergeLatestProviderResult"/>, used for a duplicate/late report of a status that was <em>already</em>
+    /// accepted (<see cref="TransitionKind.NoChange"/>), where a differing identity is a genuine U1 conflict, not a
+    /// state supersession, and must not be silently swapped in. Does not touch
+    /// processing/financial/reconciliation/settlement status and produces no <see cref="StateChange"/>.
     /// </summary>
     public void RecordLatestProviderResult(AttemptOutcome evidence, ChangeSource source, DateTimeOffset recordedAt)
     {
         ArgumentNullException.ThrowIfNull(evidence);
         LatestProviderResult = new TransactionResultProjection(evidence, source, recordedAt);
+    }
+
+    /// <summary>
+    /// ADR-027 (revised, U1): merges a new provider result into the accepted-evidence projection instead of blindly
+    /// overwriting it, for a duplicate/late report of a status that is <em>already</em> accepted
+    /// (<see cref="TransitionKind.NoChange"/>) — never for a genuinely new transition, see
+    /// <see cref="RecordLatestProviderResult"/>. Same identity (or no identity yet on either side) enriches — fills
+    /// in blanks and prefers non-empty <see cref="AttemptOutcome.Data"/> over empty — but a genuinely different
+    /// provider reference/STAN/RRN is never silently swapped in; the caller can observe the conflict through the
+    /// returned <see cref="ProviderResultMergeOutcome"/> instead of it being applied unnoticed. Does not touch
+    /// processing/financial/reconciliation/settlement status and produces no <see cref="StateChange"/>.
+    /// </summary>
+    public ProviderResultMergeOutcome MergeLatestProviderResult(AttemptOutcome incoming, ChangeSource source, DateTimeOffset recordedAt)
+    {
+        ArgumentNullException.ThrowIfNull(incoming);
+
+        var existing = LatestProviderResult?.Evidence;
+        if (existing is null)
+        {
+            LatestProviderResult = new TransactionResultProjection(incoming, source, recordedAt);
+            return ProviderResultMergeOutcome.Recorded;
+        }
+
+        var incomingIdentity = incoming.ProviderReference ?? incoming.ProviderStan ?? incoming.ProviderRrn;
+        if (incomingIdentity is null)
+        {
+            return ProviderResultMergeOutcome.IgnoredNoIdentity;
+        }
+
+        var existingIdentity = existing.ProviderReference ?? existing.ProviderStan ?? existing.ProviderRrn;
+        if (existingIdentity is not null && incomingIdentity != existingIdentity)
+        {
+            return ProviderResultMergeOutcome.ConflictingIdentity;
+        }
+
+        var merged = AttemptOutcome.Create(
+            requestSent: incoming.RequestSent,
+            transportStatus: incoming.TransportStatus,
+            providerTransactionStatus: incoming.ProviderTransactionStatus ?? existing.ProviderTransactionStatus,
+            ransysResponseCode: incoming.RansysResponseCode ?? existing.RansysResponseCode,
+            providerResponseCode: incoming.ProviderResponseCode ?? existing.ProviderResponseCode,
+            providerResponseMessage: incoming.ProviderResponseMessage ?? existing.ProviderResponseMessage,
+            providerReference: incoming.ProviderReference ?? existing.ProviderReference,
+            providerStan: incoming.ProviderStan ?? existing.ProviderStan,
+            providerRrn: incoming.ProviderRrn ?? existing.ProviderRrn,
+            latency: incoming.Latency ?? existing.Latency,
+            rawMessages: incoming.RawMessages != RawMessageReferences.None ? incoming.RawMessages : existing.RawMessages,
+            providerSentAt: incoming.ProviderSentAt ?? existing.ProviderSentAt,
+            providerResponseAt: incoming.ProviderResponseAt ?? existing.ProviderResponseAt,
+            metadata: incoming.Metadata,
+            data: incoming.Data is { Count: > 0 } ? incoming.Data : existing.Data);
+
+        if (merged.IsFailure)
+        {
+            return ProviderResultMergeOutcome.IgnoredNoIdentity;
+        }
+
+        LatestProviderResult = new TransactionResultProjection(merged.Value, source, recordedAt);
+        return ProviderResultMergeOutcome.Enriched;
     }
 
     /// <summary>

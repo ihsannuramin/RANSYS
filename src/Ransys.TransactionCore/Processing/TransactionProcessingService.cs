@@ -708,11 +708,9 @@ public sealed class TransactionProcessingService(
     {
         if (prepared.Attempt is null)
         {
-            // Replay (R4/ADR-026, ADR-027): prefer the transaction's latest-provider-result projection (a later/final
-            // async report, e.g. a callback that arrived after the resolving attempt's outcome was already immutable)
-            // over the latest resolved attempt's own data, so a merchant retry never loses business data to either.
-            var data = prepared.Transaction.LatestProviderResult?.Evidence.Data ?? prepared.LatestOutcome?.Data ?? NoData;
-            return Build(prepared.Transaction, prepared.LatestOutcome, data, prepared.IsReplay);
+            // Replay (R4/ADR-026, ADR-027): Build now owns the entire accepted-vs-fallback decision (U2), so the only
+            // fallback the caller needs to supply is the legacy attempt outcome's own data.
+            return Build(prepared.Transaction, prepared.LatestOutcome, prepared.LatestOutcome?.Data ?? NoData, prepared.IsReplay);
         }
 
         var transaction = prepared.Transaction;
@@ -949,11 +947,11 @@ public sealed class TransactionProcessingService(
     private TransactionProcessingResult Build(
         Transaction transaction, AttemptOutcome? attemptOutcome, IReadOnlyDictionary<string, JsonElement> fallbackData, bool isReplay)
     {
-        // T3 (ADR-027): one accepted-result selection feeds both references and data, so a replayed POST of the same
-        // idempotent request shows the same STAN/RRN/data as GET — the transaction's latest accepted provider evidence,
-        // never a stale attempt's own outcome once a later report has superseded it.
-        var accepted = transaction.LatestProviderResult?.Evidence ?? attemptOutcome;
-        var data = accepted?.Data ?? fallbackData;
+        // T3/U2 (ADR-027): an accepted projection, when one exists, is authoritative for both references and data —
+        // even a legitimately empty Data or STAN/RRN on it must not fall through to a stale attempt outcome. Only the
+        // true absence of any accepted projection falls back to the attempt outcome / caller-supplied fallback.
+        var final = transaction.LatestProviderResult?.Evidence;
+        var data = final is not null ? (final.Data ?? NoData) : (attemptOutcome?.Data ?? fallbackData);
         var code = RansysResponseCodes.ForTransaction(transaction.ProcessingStatus, transaction.ResponseCode);
         return new TransactionProcessingResult(
             transaction.Id,
@@ -964,8 +962,8 @@ public sealed class TransactionProcessingService(
             RansysResponseCodes.MessageFor(code, transaction.ProcessingStatus),
             new PublicReferences(
                 transaction.References.MerchantReference,
-                accepted?.ProviderStan ?? transaction.References.Stan,
-                accepted?.ProviderRrn ?? transaction.References.Rrn),
+                final is not null ? final.ProviderStan : (attemptOutcome?.ProviderStan ?? transaction.References.Stan),
+                final is not null ? final.ProviderRrn : (attemptOutcome?.ProviderRrn ?? transaction.References.Rrn)),
             data,
             clock.UtcNow,
             isReplay);

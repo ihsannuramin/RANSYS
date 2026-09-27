@@ -139,3 +139,49 @@ In short: `LatestProviderResult` represents the **accepted** result, not merely 
 `Applied` and `NoChange` both refine that accepted picture; `ConflictRecorded` never does.
 - Out of scope: this does not change what counts as a valid transition, ADR-012/023/019's child semantics, or
   ADR-018's `PROTOCOL_ERROR` handling.
+
+### Merge, not overwrite (U1/U2 follow-up)
+A further external re-review (`review/RANSYS_Review_Progress_7dbaf4b.md`, U1/U2) found that RR3's "also updates" for
+`Applied`/`NoChange` was itself still a blind unconditional overwrite of the whole projection — `Transaction.
+RecordLatestProviderResult(evidence, source, recordedAt)` always replaced every field with whatever the new report
+carried, including blank ones. Two concrete regressions followed: a later report with the *same* accepted status but
+*less complete* evidence (empty reference/STAN/RRN/data) silently erased a fuller previously-accepted projection
+(U1), and a later report with a genuinely *different* provider reference silently replaced the earlier one with no
+trace, purely because both said SUCCESS. Readers had the same class of bug: `TransactionProcessingService.Build`'s
+`accepted?.Data ?? fallbackData` chain (and the equivalent `PostgresTransactionQuery` `COALESCE`) could not tell "an
+accepted projection exists but its own `Data`/STAN/RRN is legitimately empty" from "no accepted projection exists at
+all", and fell through to stale attempt-outcome data a later, final, empty-data report was supposed to supersede (U2).
+
+The fix: `RecordLatestProviderResult` is replaced by `Transaction.MergeLatestProviderResult(incoming, source,
+recordedAt) : ProviderResultMergeOutcome`:
+- No projection yet ⇒ `Recorded`: the incoming evidence becomes the projection outright.
+- A projection exists and the incoming report carries a provider identity (`ProviderReference ?? ProviderStan ??
+  ProviderRrn`) that matches the existing one, **or** the existing projection has no identity yet ⇒ `Enriched`: the
+  merge fills in fields the existing projection has as null from the incoming report, and prefers non-empty `Data`
+  over empty `Data` (never the reverse) — it never blanks out a field the existing projection already had a value
+  for.
+- The incoming report carries no provider identity at all (nothing to merge or compare by) ⇒ `IgnoredNoIdentity`:
+  nothing changes; a duplicate/late report with no concrete reference can never erase or dilute an already-known one.
+- The incoming report's identity differs from the existing projection's ⇒ `ConflictingIdentity`: nothing changes.
+  This is a genuinely different provider reference/STAN/RRN reported for the same transaction — never silently
+  swapped in. The conflict is observable through the returned `ProviderResultMergeOutcome` (callers may log/alert on
+  it); it is not separately persisted as its own row in this change.
+
+`TransactionFinalizationService.ApplyAsync` calls `MergeLatestProviderResult` at both points that used to call
+`RecordLatestProviderResult` (the `NoChange` branch and the post-ledger `Applied` branch; `ConflictRecorded` still
+never calls it at all, unchanged from RR3). In the `NoChange` branch, the transaction row is only re-persisted when
+the merge outcome is `Recorded` or `Enriched` — `IgnoredNoIdentity`/`ConflictingIdentity` mean nothing changed, so
+there is nothing to write.
+
+Readers that used to prefer "the projection if any of its fields is non-null, else the fallback" now prefer "the
+projection if it exists at all (regardless of which of its own fields are null), else the fallback":
+`TransactionProcessingService.Build` first asks whether `transaction.LatestProviderResult` exists; only when it does
+not does it fall back to the attempt outcome / caller-supplied fallback data. `PostgresTransactionQuery`'s GET query
+changes from `COALESCE(t.latest_result_provider_stan, a.provider_stan)` to a `CASE WHEN t.latest_result_recorded_at
+IS NOT NULL THEN t.latest_result_provider_stan ELSE a.provider_stan END` — trusting an existing accepted
+projection's own (possibly null) value instead of silently falling back to the older attempt-join value. This is the
+same class of fix U2 asked for, applied uniformly to every reader, not only the replay path.
+`ProviderRequestFactory.OriginalProviderReferences.From(original, originalAttempts)` is intentionally left as-is: it
+already only falls back to the attempt scan when the accepted evidence has *no reference at all*, which suits its
+purpose (a child request just needs some reference to proceed) and is not the "empty is the same as absent" bug this
+follow-up fixes elsewhere.
