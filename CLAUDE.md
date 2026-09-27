@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-Phase 1 (main.md milestones 1–10) is implemented; see the Definition of Done table in `README.md`. `main.md` is the implementation handoff: it defines the milestones, the non-negotiable invariants, and the "do not implement yet" list. The design documents in `docs/` are authoritative and are written in mixed Indonesian and English. Keep that style when editing them. Milestone status is tracked in `README.md`.
+Phase 1 (main.md milestones 1–10) is implemented; see the Definition of Done table in `README.md`. `main.md` is the implementation handoff: it defines the milestones, the non-negotiable invariants, and the "do not implement yet" list. Milestone 12 (OpenAPI v1 + Provider Adapter Contract v1) follows a second handoff, `20260927-handoff-part2.md`, at repo root. The design documents in `docs/` are authoritative and are written in mixed Indonesian and English. Keep that style when editing them. Milestone status is tracked in `README.md`.
 
 ## Commands
 
@@ -71,7 +71,8 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 
 - Create attempts only via `TransactionAttemptService.StartAsync` while holding the transaction row lock, and **commit before calling the provider**. It runs `Transaction.AuthorizeAttempt`, so there are no new financial requests after a possible send and attempts only target the current routed provider. The primary attempt type must match the transaction type (`Transaction.PrimaryAttemptTypeFor`: Payment/Purchase → PAYMENT, Transfer → TRANSFER, Refund, Reversal, Void, Inquiry, BalanceInquiry). Record results with `RecordOutcomeAsync`, exactly once.
 - DB representation: a started row is `request_sent=true, transport_status='SENT', outcome_recorded_at NULL` (migration `0004`). Only `outcome_recorded_at IS NOT NULL` means an outcome exists. Never downgrade `request_sent` except through a recorded adapter outcome.
-- Map results with `AttemptResolution.Classify`. `PROTOCOL_ERROR` (ADR-018) never proves not-sent; only NOT_SENT / CONNECTION_ERROR with `request_sent=false` do. `AttemptRecoveryService` turns outcome-less attempts into IN_DOUBT (never failover or release).
+- Map results with `AttemptResolution.Classify`. `PROTOCOL_ERROR` (ADR-018) never proves not-sent; only NOT_SENT / CONNECTION_ERROR with `request_sent=false` do. `AttemptRecoveryService` turns outcome-less attempts into IN_DOUBT (never failover or release) and, like `TransactionFinalizationService`, enqueues the transaction status event in the same session (shared `TransactionStatusEvents.Build` helper) — recovery must never change a transaction's state without publishing it.
+- The recorded outcome's business response data (e.g. an inquiry's `billAmount`) is a promoted canonical field, `response_data` (migration `0009`, ADR-026) — distinct from `Metadata`'s provider-extension purpose. A replay of an already-completed transaction returns the latest resolved attempt's `response_data` instead of an empty object.
 
 ## Transaction processing (M12d)
 
@@ -94,6 +95,7 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 ## Idempotency
 
 - New transactions are created only through `IdempotencyService.ClaimAsync(session, channel, identity, createTransaction)` (`src/Ransys.TransactionCore/Idempotency`). It returns `New` (your callback inserted the row), `ExistingTransaction` (return that transaction; discard the aggregate you built), or `DUPLICATE_REFERENCE_CONFLICT`. The callback runs under a savepoint, because losing the `ux_idempotency_active_reference` race aborts the PG transaction. Don't catch unique violations elsewhere to replicate this.
+- A retry must not depend on reference data that can drift after the original request (ADR-025). `TransactionProcessingService.PrepareOriginalAsync` calls `IdempotencyService.PeekActiveAsync` for an existing claim **before** resolving product/currency/wallet; when a claim exists, the candidate fingerprint is anchored to the *original transaction's own* `ProductId` and hydrated `Amount.Currency` (never a fresh "currently active" lookup), so a deactivated product or a rolled-over currency version never breaks a legitimate replay. Only a genuinely new transaction resolves live reference data.
 - `IDatabaseSession` supports savepoints for this purpose. `Ransys.Workers` hosts `IdempotencyExpiryWorker` (ADR-009 sweep) and requires `ConnectionStrings:TransactionDb` (set locally as a user secret, `UserSecretsId=ransys-workers-dev`; never commit it).
 
 ## Provider Adapter contract (M12b)
@@ -103,7 +105,7 @@ DB-backed tests use a real local PostgreSQL 18, database `RANSYS_PG`. The connec
 - `Ransys.Adapter.Sdk`: `ProtoMapper` is the only proto ↔ C# mapping (money as exact decimal strings; mapping choices documented on the class; throws `ProtoMappingException`, never guesses). `GrpcProviderAdapterClient` / `ProviderAdapterGrpcService` and `GrpcProviderCallbackSinkClient` / `ProviderCallbackSinkGrpcService` are thin bindings with no business logic.
 - No hidden retries anywhere: one gRPC call per operation, and never configure a gRPC retry/hedging policy on adapter channels.
 - Core provider gateway (`src/Ransys.TransactionCore/Providers`, M12c; Core references only `Adapter.Contracts`): `IProviderAdapterResolver` (`InProcessProviderAdapterRegistry` for Lite/tests), `ProviderRequestFactory` (children carry the original's provider references), `ProviderInvoker` (dispatch by transaction type, time budget; missing adapter ⇒ NOT_SENT; exception/timeout after start ⇒ IN_DOUBT `RequestSent=true`; never throws), `ProviderResultInterpreter` (`Normalize` first; values that do not fit attempt columns go to `extension.adapter.*` metadata; never drops an outcome).
-- `ProviderCallbackSink` (V1 `IProviderCallbackSink`): `OriginalRansysTransactionId` is the transaction the provider acted on (the **child** id for reversal/refund/void). It checks the callback's provider is the routed provider, then calls finalization with `ChangeSource.Callback`. Duplicate/conflict/stale ⇒ accepted; unknown, provider mismatch, NOT_SENT or DB failure ⇒ not accepted.
+- `ProviderCallbackSink` (V1 `IProviderCallbackSink`): `OriginalRansysTransactionId` is the transaction the provider acted on (the **child** id for reversal/refund/void). It locks the transaction row once (`FOR UPDATE`) and keeps that single lock for the whole call — the provider-match check, attempt correlation, and the finalization it calls all run under it, so a concurrent failover cannot land between the check and the update. It correlates the callback to the attempt for that provider and, if that attempt has no recorded outcome yet, persists the callback's provider reference/STAN/RRN via `TransactionAttemptService.RecordOutcomeAsync` (ADR-005 exactly-once) before calling finalization with `ChangeSource.Callback`. Duplicate/conflict/stale ⇒ accepted; unknown, provider mismatch, NOT_SENT or DB failure ⇒ not accepted.
 - `RequestSent` is conservative: a gRPC failure that may have reached the adapter becomes IN_DOUBT + AMBIGUOUS with `RequestSent=true`. NOT_SENT only when non-delivery is proven (request not mappable, connection could not be established). TRANSFER/VOID call `TransferAsync`/`VoidAsync`, never reversal/refund.
 
 ## Domain conventions (`src/Ransys.Domain`)
@@ -132,7 +134,7 @@ Read these in this order. Later, more detailed documents refine earlier ones.
 
 Known refinement: the Architecture Spec §6 describes a single transaction status. The later documents split status into **four independent dimensions**: `processing_status`, `financial_status`, `reconciliation_status`, `settlement_status`. Follow the four-dimension model. `RECON_PENDING`/`RECON_EXCEPTION` belong to the reconciliation dimension, not processing.
 
-Next planned artifacts (Sequence Pack §29): OpenAPI v1, Provider Adapter Contract v1, Response Code Catalog v1, Configuration Schema v1.
+OpenAPI v1 and Provider Adapter Contract v1 (Sequence Pack §29) are implemented as of Milestone 12 — see `docs/RANSYS_OpenAPI_v1.yaml` and `docs/RANSYS_Provider_Adapter_Contracts_v1.cs`/`.proto`, both now authoritative alongside the documents above. Next planned artifacts: Response Code Catalog v1, Configuration Schema v1.
 
 ## Architecture essentials (cross-document)
 
@@ -160,7 +162,7 @@ Next planned artifacts (Sequence Pack §29): OpenAPI v1, Provider Adapter Contra
 - Timestamps: `timestamptz`, timezone-aware.
 - State columns: `VARCHAR` + named `CHECK` constraints (not native PG ENUM), so migrations can follow expand → deploy → migrate → contract.
 - JSON extensions in `JSONB`. `Metadata` is only for provider/product-specific extensions. Fields that come into common use get promoted to canonical fields.
-- Ledger: immutable, double-entry (`SUM(debit) = SUM(credit)`). Corrections use compensating entries. Every posting has a `UNIQUE posting_key` (e.g. `TX123:RESERVE`, `TX123:POST`, `TX123:REFUND:RF001`). The wallet projection (`ledger_balance`, `available_balance`, `reserved_balance`) is updated in the same DB transaction and must be reconstructible from the ledger.
+- Ledger: immutable, double-entry (`SUM(debit) = SUM(credit)`). Corrections use compensating entries. Every posting has a `UNIQUE posting_key` (ADR-001, e.g. `TX:<txId>:RESERVE`, `TX:<txId>:POST`, `TX:<txId>:REFUND:<ref>`). The wallet projection (`ledger_balance`, `available_balance`, `reserved_balance`) is updated in the same DB transaction and must be reconstructible from the ledger.
 - Idempotency: 24h window scoped to client/channel + `client_reference`. Same reference with the same fingerprint returns the existing transaction. Same reference with a different fingerprint returns `2003 DUPLICATE_REFERENCE_CONFLICT`. ClientReference, IdempotencyKey, Fingerprint, and Nonce are distinct concepts.
 - Response codes: 4-digit canonical namespaces (0xxx provider, 1xxx internal, 2xxx validation, 3xxx security, 4xxx financial, 5xxx routing/config, 6xxx recon/settlement, 7xxx async, 8xxx infra). `responseCode` and `transactionStatus` are separate fields. The raw provider code is always kept.
 - Refunds and reversals are child transactions linked via `original_transaction_id`. Transactions record the fee, config, and routing versions they used.

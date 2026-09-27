@@ -56,9 +56,9 @@ Other environments supply it through the environment variable `ConnectionStrings
 | `Ransys.Configuration` | Versioned configuration lookup. |
 | `Ransys.Persistence.PostgreSql` | Npgsql + Dapper data access, SQL migrations (DDL v1.1). |
 | `Ransys.Infrastructure` | Technical services (UUIDv7, secret provider, raw message storage). |
-| `Ransys.Adapter.Contracts` / `Ransys.Adapter.Sdk` | Provider adapter boundary (placeholders pending Provider Adapter Contract v1). |
+| `Ransys.Adapter.Contracts` / `Ransys.Adapter.Sdk` | Provider adapter boundary: Provider Adapter Contract v1 (C# + gRPC/protobuf), implemented since Milestone 12b. |
 | `Ransys.Workers` | Background host: transactional outbox worker, idempotency expiry sweep. |
-| `Ransys.Api` | API host / composition root (public endpoints pending OpenAPI v1). |
+| `Ransys.Api` | API host / composition root: OpenAPI v1 merchant endpoints, implemented since Milestone 12e. |
 
 Dependency direction: `Domain ← Application ← Infrastructure / API`, enforced by `tests/Ransys.IntegrationTests/Architecture/DependencyRulesTests.cs`.
 
@@ -76,8 +76,14 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 | 8 Transactional outbox | Done |
 | 9 Routing foundation | Done |
 | 10 Concurrency scenarios | Done |
+| 12a Reconcile contracts for OpenAPI v1 / Adapter Contract v1 (capability catalog, refund/void domain model) | Done |
+| 12b Provider Adapter Contract v1 (`Ransys.Adapter.Contracts`, `Ransys.Adapter.Sdk`) | Done |
 | 12c Core provider gateway + callback sink (`TransactionCore/Providers`) | Done |
-| 12d Transaction processing orchestration (`TransactionCore/Processing`) | Done (API endpoints: 12e) |
+| 12d Transaction processing orchestration (`TransactionCore/Processing`) | Done |
+| 12e Merchant API endpoints (`Ransys.Api`) | Done |
+| 12f API/security/contract tests (`tests/Ransys.Api.Tests`) | Done |
+| 12g Milestone 12 documentation | Done |
+| 13 Architecture review remediation (`review/RANSYS_Architecture_Review_f1fbefe.md`) | Done — see below |
 
 ## Phase 1 Definition of Done (main.md §28)
 
@@ -107,7 +113,7 @@ Contracts: `docs/RANSYS_OpenAPI_v1.yaml`, `docs/RANSYS_Provider_Adapter_Contract
 
 - **Endpoints** (`src/Ransys.Api`): `POST /api/v1/{inquiries,payments,transfers,refunds,reversals,voids}` and `GET /api/v1/transactions/{ransysTransactionId}`. DTOs in `Contracts/V1` mirror the OpenAPI schemas. Money is a decimal string, and unknown JSON properties are rejected. HTTP 200 means the request entered processing; the business result is `transactionStatus` plus `responseCode` (ADR-021).
 - **Security** (ADR-022, proposed): production authentication fails closed (401). A development authenticator (`X-Ransys-Client-Id` = channel UUID, timestamp window, nonce, `Content-Digest`) is allowed only in Development/Test with `Ransys:Auth:AllowDevelopmentAuthentication=true`. Signature verification (`ISignatureVerifier`) still needs the signature profile.
-- **Processing**: `TransactionProcessingService` persists the transaction, idempotency claim, fee (ADR-020), reserve, route and attempt **before** calling the provider. It calls the provider outside any DB transaction, then records and finalizes the result. If the database is unavailable the API returns 503 and never calls the provider.
+- **Processing**: `TransactionProcessingService` persists the transaction, idempotency claim, fee (ADR-020), reserve, route and attempt **before** calling the provider. It calls the provider outside any DB transaction, then records and finalizes the result. A database failure *before* the provider is ever called (session 1) surfaces as API 503, and the provider is never called. A database failure *after* the provider was called (session 2) never returns 503 — the honest answer is IN_DOUBT 1002, with the outcome-less attempt left for `AttemptRecoveryService` to resolve (never silently dropped, never treated as "not sent").
 - **Child transactions**: reversal (ADR-012), refund (ADR-023/024) and void (ADR-019: fail closed, reconciliation exception) are children with their own id. Starting one never overwrites the original.
 - **Provider adapters**: the contract is in `Ransys.Adapter.Contracts.V1` and the gRPC binding in `Ransys.Adapter.Sdk`, with the same semantics as the in-process binding. Core uses `IProviderAdapterResolver` (`InProcessProviderAdapterRegistry`), `ProviderResultInterpreter` (conservative `RequestSent`) and `ProviderCallbackSink` (idempotent callbacks).
 - **Running locally**: `dotnet user-secrets set "ConnectionStrings:TransactionDb" "<connection string>" --project src/Ransys.Api`. No real provider adapter is registered yet.
@@ -121,17 +127,33 @@ Contracts: `docs/RANSYS_OpenAPI_v1.yaml`, `docs/RANSYS_Provider_Adapter_Contract
 | Provider Adapter Contract v1 and protobuf compile | Met (build; proto byte-equal to the doc) |
 | `requestSent` safety preserved; adapter cannot mutate financial state | Met (ADR-005, `ProviderResultRules`, dependency rules) |
 | Callback ingress idempotency-ready | Met (`ProviderCallbackSink`) |
-| `dotnet build` / `dotnet test` pass | Met: 0 warnings, 1,439 tests |
+| `dotnet build` / `dotnet test` pass | Met: 0 warnings, 1,439 tests (`f1fbefe`, .NET 10.0.401, local PostgreSQL 18) |
 | Conflicts documented as ADRs | ADR-018 … ADR-024 |
 
 Remaining TODOs: Response Code Catalog v1 (only approved codes are used; frozen wallet and unmapped failures fall back to 1001), the signature profile and production authenticator, real provider adapters and their configuration, inquiry default currency, a hosted recovery worker schedule, outbox consumers (Backoffice), the circuit breaker, and the final VOID financial semantics (ADR-019).
 
+## Architecture review remediation — Milestone 13
+
+An external architecture review (`review/RANSYS_Architecture_Review_f1fbefe.md`, HEAD `f1fbefe`) found three P1 correctness issues and three P2 issues in the Milestone 12 work above. All six are fixed:
+
+| ID | Finding | Fix | Commit |
+|---|---|---|---|
+| R1 | Provider callback validation raced finalization (unlocked read, separate later lock) | `ProviderCallbackSink` now takes one continuous `FOR UPDATE` lock for the whole call; provider-mismatch check and attempt correlation both run under it | `4e8edf5` |
+| R2 | Callback-resolved attempts never got their provider reference/STAN/RRN persisted | The sink now calls `TransactionAttemptService.RecordOutcomeAsync` (ADR-005 exactly-once) before finalizing, so callback evidence is available to GET and to child (refund/reversal) provider requests | `4e8edf5` |
+| R3 | A retry could fail (`ProductNotAvailable`/`WalletNotFound`/conflict) if reference data drifted after the original request | `IdempotencyService.PeekActiveAsync` runs before any reference-data resolution; a replay's fingerprint is anchored to the original transaction's own product/currency snapshot, never live "currently active" data (ADR-025) | `93f6396` |
+| R4 | A replay of a completed transaction always returned empty `data` (e.g. inquiry `billAmount` lost) | Business response data is now a promoted canonical field, `transaction_attempts.response_data` (migration `0009`, ADR-026), and replay returns the latest resolved attempt's data | `bd80418` |
+| R5 | `AttemptRecoveryService` marked a transaction IN_DOUBT without ever publishing a `TRANSACTION_IN_DOUBT` outbox event | Recovery now shares `TransactionStatusEvents.Build` with `TransactionFinalizationService` and enqueues the same event, in the same session, exactly once | `a2b9039` |
+| R6 | CLAUDE.md/README.md contained stale/contradictory passages (this section, the ADR index, the milestone table, the DB-unavailable claim, the posting-key example, ADR status categorization) | This documentation pass | — |
+
+Two new ADRs came out of this: ADR-025 (idempotency replay anchors to the original transaction's snapshot) and ADR-026 (persisted response-data snapshot for replay), both Accepted as correctness fixes under already-established rules (ADR-006, ADR-009, and the "fields that come into common use get promoted to canonical fields" convention), not new open product decisions.
+
+Final verification for this milestone: `dotnet build Ransys.sln` — 0 warnings, 0 errors; `dotnet test Ransys.sln` against real PostgreSQL (`RANSYS_TEST_PG`) — **1,446 passed, 0 failed, 0 skipped** across all 8 test projects (`.NET 10.0.401`, local PostgreSQL 18), at commit `a2b9039`. Not pushed to GitHub pending review.
+
 ## Architecture decisions
 
-All decisions are recorded in [`docs/decisions/`](docs/decisions/) (ADR-001 … ADR-020, ADR-023, ADR-024).
+All decisions are recorded in [`docs/decisions/`](docs/decisions/) (ADR-001 … ADR-026).
 
-
-Decided and implemented:
+Decided and implemented (product owner accepted):
 
 - ADR-012: reversal as a child transaction (`ReversalService`, migration `0006`); the original is never overwritten while the reversal runs and becomes REVERSED when the child is confirmed (ADR-003 superseded).
 - ADR-014: `FeeComponent.RefundPolicy` (migration `0005`) and `RefundFeeCalculator` (FULL on completion, PRO_RATA cumulative truncated). Refund finalization (M12c) calls it and passes the result to `PostRefundAsync`.
@@ -139,9 +161,16 @@ Decided and implemented:
 - ADR-017: TRANSFER / VOID capabilities official; VOID never mapped to reversal/refund.
 - ADR-018: capability codes are the Provider Adapter Contract v1 catalog (`PAYMENT`, `BALANCE_CHECK`, `VOID`, …); migration `0007` renames the old `supports_*` rows and adds transport status `PROTOCOL_ERROR` (never proves not-sent).
 - ADR-019 (interim): VOID is a child transaction; `Transaction.RecordVoidConfirmed` only sets the original's reconciliation to EXCEPTION (`VOID_CONFIRMED_REQUIRES_REVIEW`). VOID financial semantics are still open.
-- ADR-023 (proposed): a refund child completes the original directly (`AuthorizeRefund`, `ApplyRefundCompleted`: SUCCESS → PARTIALLY_REFUNDED / REFUNDED, no REFUND_PENDING). `TransactionFinalizationService` posts the refund (fee via `RefundFeeCalculator`, cumulative over earlier successful refund children) and completes the original in the same DB transaction.
 - ADR-020 (interim): minimal fee resolver (`FeeResolver`): active FEE version, FIXED or PERCENTAGE (decimal rate) × amount, clamp min/max, half away from zero to scale, merchant-specific rule wins, ambiguous ⇒ fail closed, no rule/version ⇒ zero fee, refund policy NONE.
-- ADR-024 (proposed): `RefundAuthorization` distinguishes a manual refund (maker-checker `ApprovedRequest`) from a merchant API refund bound to its own REFUND child (`MerchantApiRequest`, no approval id).
+- ADR-021: API error mapping — HTTP status per business/validation outcome (ADR-021's own file: Status Accepted).
+- ADR-025: idempotent replay anchors to the original transaction's own product/currency snapshot; the existing-claim lookup now runs before any reference-data resolution. Correctness fix, not a new open decision.
+- ADR-026: business response data (e.g. inquiry `billAmount`) is a promoted canonical field, `transaction_attempts.response_data` — distinct from `Metadata`'s provider-extension purpose — so a replay returns the same data the original response had.
+
+Implemented, pending product-owner acceptance (each ADR file's own Status line still says "Proposed" — do not read the implementation as a decision already signed off):
+
+- ADR-022: request authentication abstractions (`IRequestAuthenticationService`/`ISignatureVerifier`/`IReplayProtectionService`); production fails closed, a Development/Test-only authenticator exists. The RANSYS signed-message profile itself is still undecided.
+- ADR-023: a refund child completes the original directly (`AuthorizeRefund`, `ApplyRefundCompleted`: SUCCESS → PARTIALLY_REFUNDED / REFUNDED, no REFUND_PENDING). `TransactionFinalizationService` posts the refund (fee via `RefundFeeCalculator`, cumulative over earlier successful refund children) and completes the original in the same DB transaction.
+- ADR-024: `RefundAuthorization` distinguishes a manual refund (maker-checker `ApprovedRequest`) from a merchant API refund bound to its own REFUND child (`MerchantApiRequest`, no approval id).
 
 Decided, no Phase 1 code change needed:
 
@@ -156,4 +185,4 @@ Still open:
 - Minimum age before recovering an outcome-less attempt must exceed the longest provider timeout; the recovery worker schedule is not yet configured (service implemented, no hosted loop).
 - Outbox consumers: Backoffice projection with inbox/dedup + `source_version`, optional RabbitMQ publisher, DEAD-event alerting and retention of published rows.
 - Circuit breaker (state transitions, half-open probe limits) and provider health measurement are not implemented; routing only reads their state.
-- Items deferred to later design documents: OpenAPI v1, SIGNED_API contract, Provider Adapter Contract v1, response code catalog, configuration schema, SOAP/ISO8583 profiles.
+- Items deferred to later design documents: the SIGNED_API contract (signature profile), response code catalog, configuration schema, SOAP/ISO8583 profiles. (OpenAPI v1 and Provider Adapter Contract v1 are implemented, Milestone 12 — see above.)
