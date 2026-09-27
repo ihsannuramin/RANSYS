@@ -1,15 +1,19 @@
-using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Text.Json;
 using Ransys.Adapter.Contracts.V1;
 using Ransys.Domain;
 using Ransys.Domain.Attempts;
+using Ransys.Domain.Common;
 using Ransys.Domain.Fees;
 using Ransys.Domain.Transactions;
+using Ransys.IntegrationTests.Processing;
 using Ransys.Persistence.PostgreSql.Queries;
+using Ransys.Testing;
 using Ransys.Testing.PostgreSql;
 using Ransys.TransactionCore.Finalization;
+using Ransys.TransactionCore.Processing;
 using Ransys.TransactionCore.Providers;
+using Ransys.TransactionCore.Reversal;
 using static Ransys.IntegrationTests.CoreHarness;
 using ProviderOutcome = Ransys.Adapter.Contracts.V1.ProviderOutcome;
 using TransportStatus = Ransys.Adapter.Contracts.V1.TransportStatus;
@@ -24,6 +28,10 @@ namespace Ransys.IntegrationTests.Providers;
 public sealed class CallbackAndChildFinalizationTests(PostgresDatabaseFixture db)
 {
     private readonly CoreHarness _h = new(db);
+
+    // T2-B/T3 need the full TransactionProcessingService (real sync-path interleaving with a scripted adapter),
+    // not just CoreHarness's direct finalization/callback plumbing.
+    private readonly ProcessingHarness _p = new(db);
 
     [Fact]
     public async Task Callback_success_posts_once_duplicate_is_no_change_and_contradiction_is_a_recon_exception()
@@ -243,11 +251,20 @@ public sealed class CallbackAndChildFinalizationTests(PostgresDatabaseFixture db
     /// against a stand-in for the sync completion path (a direct <c>ApplyAsync</c> call with
     /// <see cref="ChangeSource.SyncProviderResponse"/>, the same call every sync-path test in this file already
     /// uses) over several concurrent refund/void children, each side opening its own session/connection, to force
-    /// real lock contention. REVERSAL is not included: <see cref="CoreHarness.ProcessingChild"/> builds a generic
-    /// child transaction directly (it does not go through <c>ReversalService</c>), which is enough to exercise
-    /// REFUND and VOID finalization but not a reversal's provider-reference bookkeeping; REFUND and VOID already
-    /// cover both of finalization's two post-child-success shapes (a ledger posting vs. none), which is what RR1's
-    /// lock order fix actually changes.
+    /// real lock contention.
+    /// <para>
+    /// T4 (b9616fb): the previous version of this test only checked that no exception surfaced and asserted the
+    /// winning side's final state — but <see cref="ProviderCallbackSink.SubmitAsync"/> catches a real
+    /// <see cref="System.Data.Common.DbException"/> (which includes a Postgres deadlock, SQLSTATE 40P01) internally
+    /// and returns a normal <c>Accepted = false</c> ack, never a thrown exception. A real deadlock absorbed this way
+    /// would have passed silently. This version asserts BOTH sides' actual results explicitly (the callback's
+    /// <see cref="ProviderCallbackAck.Accepted"/> and the sync completion's <see cref="Result{T}.IsSuccess"/>), with a
+    /// bounded wait per operation so a genuine hang fails clearly instead of blocking the suite. A REVERSAL variant
+    /// follows separately below, since it needs a real <see cref="ReversalService"/>-created child (its own
+    /// provider-reference bookkeeping, ADR-012) rather than <see cref="CoreHarness.ProcessingChild"/>'s generic child;
+    /// REFUND and VOID here already cover both of finalization's two post-child-success shapes (a ledger posting vs.
+    /// none), which is what RR1's lock order fix actually changes.
+    /// </para>
     /// </summary>
     [Theory]
     [InlineData(TransactionType.Refund)]
@@ -261,50 +278,90 @@ public sealed class CallbackAndChildFinalizationTests(PostgresDatabaseFixture db
             return (Payment: payment, Wallet: wallet, Child: child);
         }));
 
-        var errors = new ConcurrentBag<Exception>();
-        await Task.WhenAll(cases.SelectMany(c => new Task[]
+        var races = await Task.WhenAll(cases.Select(async c =>
         {
-            Task.Run(async () =>
-            {
-                try
-                {
-                    await _h.CallbackSink.SubmitAsync(Callback(c.Child, ProviderOutcome.Success), CancellationToken.None);
-                }
-                catch (Exception ex)
-                {
-                    errors.Add(ex);
-                }
-            }),
-            Task.Run(async () =>
-            {
-                try
-                {
-                    await _h.Finalization.ApplyAsync(
-                        new ProviderResultCommand(c.Child, AttemptResolutionKind.Success, ChangeSource.SyncProviderResponse, "PROVIDER_SUCCESS"));
-                }
-                catch (Exception ex)
-                {
-                    errors.Add(ex);
-                }
-            }),
+            var callbackTask = Task.Run(() => _h.CallbackSink.SubmitAsync(Callback(c.Child, ProviderOutcome.Success), CancellationToken.None));
+            var syncTask = Task.Run(() => _h.Finalization.ApplyAsync(
+                new ProviderResultCommand(c.Child, AttemptResolutionKind.Success, ChangeSource.SyncProviderResponse, "PROVIDER_SUCCESS")));
+            var callback = await Bounded(callbackTask, $"callback race for child {c.Child}");
+            var sync = await Bounded(syncTask, $"sync completion race for child {c.Child}");
+            return (c.Payment, c.Wallet, c.Child, Callback: callback, Sync: sync);
         }));
 
-        Assert.Empty(errors); // no unhandled deadlock (40P01) or any other exception ever surfaces from either side
-
-        foreach (var c in cases)
+        foreach (var r in races)
         {
-            Assert.Equal(ProcessingStatus.Success, (await _h.Load(c.Child)).ProcessingStatus);
+            // Neither side may silently fail-closed (no unhandled deadlock (40P01) either): both must reach a real outcome.
+            Assert.True(r.Callback.Accepted, $"callback for child {r.Child} was not accepted: {r.Callback.AcknowledgementCode}");
+            Assert.True(r.Sync.IsSuccess, $"sync completion for child {r.Child} failed: {(r.Sync.IsFailure ? r.Sync.Error.ToString() : string.Empty)}");
+
+            Assert.Equal(ProcessingStatus.Success, (await _h.Load(r.Child)).ProcessingStatus);
             if (childType == TransactionType.Refund)
             {
-                Assert.Equal(1, await Journals($"TX:{c.Payment}:REFUND:{c.Child}")); // posted exactly once, never twice
-                Assert.Equal((ProcessingStatus.PartiallyRefunded, FinancialStatus.PartiallyRefunded), await Status(c.Payment));
+                Assert.Equal(1, await Journals($"TX:{r.Payment}:REFUND:{r.Child}")); // posted exactly once, never twice
+                Assert.Equal((ProcessingStatus.PartiallyRefunded, FinancialStatus.PartiallyRefunded), await Status(r.Payment));
             }
             else
             {
-                Assert.Equal(ReconciliationStatus.Exception, (await _h.Load(c.Payment)).ReconciliationStatus);
+                Assert.Equal(ReconciliationStatus.Exception, (await _h.Load(r.Payment)).ReconciliationStatus);
                 Assert.Equal(0, await _h.Query<int>(
-                    "SELECT count(*)::int FROM ledger.ledger_transactions WHERE posting_key LIKE @a", new { a = $"TX:{c.Payment}:REV%" }));
+                    "SELECT count(*)::int FROM ledger.ledger_transactions WHERE posting_key LIKE @a", new { a = $"TX:{r.Payment}:REV%" }));
             }
+        }
+    }
+
+    /// <summary>
+    /// T4 REVERSAL variant (b9616fb): the REFUND/VOID cases above build a generic child transaction directly
+    /// (<see cref="CoreHarness.ProcessingChild"/>); this drives the same callback-vs-sync-completion race through a
+    /// real REVERSAL child created by <see cref="ReversalService.StartAsync"/>, so the child's own provider-reference
+    /// bookkeeping and <see cref="TransactionFinalizationService"/>'s <c>ApplyReversalToOriginalAsync</c> path
+    /// (ADR-012) are exercised under the same parent → child lock order, not only REFUND/VOID's.
+    /// </summary>
+    [Fact]
+    public async Task Callback_racing_the_sync_completion_path_on_a_reversal_child_never_deadlocks_and_finalizes_once()
+    {
+        await _h.GrantCapability(_h.ProviderA.ProviderId, Ransys.Domain.Routing.ProviderCapabilities.Reversal);
+
+        var cases = await Task.WhenAll(Enumerable.Range(0, 8).Select(async _ =>
+        {
+            var (payment, wallet) = await PostedPayment(FeeRefundPolicy.None);
+
+            TransactionId child;
+            await using (var session = await _h.Session())
+            {
+                var started = Ok(await _h.Reversals.StartAsync(
+                    session, new StartReversalCommand(payment, $"REV-{Guid.NewGuid():N}", null, "REVERSAL_REQUESTED", ChangeSource.ManualAction)));
+                await session.CommitAsync();
+                child = started.ReversalTransactionId;
+            }
+
+            await using (var attemptSession = await _h.Session())
+            {
+                var transaction = Ok(await _h.Transactions.GetAsync(attemptSession, child, Persistence.PostgreSql.Transactions.RowLock.ForUpdate))!;
+                Ok(await _h.Attempts.StartAsync(attemptSession, transaction, AttemptType.Reversal, transaction.Routing!.CurrentProvider, "corr-rev", "trace-rev"));
+                await attemptSession.CommitAsync();
+            }
+
+            return (Payment: payment, Wallet: wallet, Child: child);
+        }));
+
+        var races = await Task.WhenAll(cases.Select(async c =>
+        {
+            var callbackTask = Task.Run(() => _h.CallbackSink.SubmitAsync(Callback(c.Child, ProviderOutcome.Success), CancellationToken.None));
+            var syncTask = Task.Run(() => _h.Finalization.ApplyAsync(
+                new ProviderResultCommand(c.Child, AttemptResolutionKind.Success, ChangeSource.SyncProviderResponse, "REVERSAL_CONFIRMED")));
+            var callback = await Bounded(callbackTask, $"callback race for reversal child {c.Child}");
+            var sync = await Bounded(syncTask, $"sync completion race for reversal child {c.Child}");
+            return (c.Payment, c.Wallet, c.Child, Callback: callback, Sync: sync);
+        }));
+
+        foreach (var r in races)
+        {
+            Assert.True(r.Callback.Accepted, $"callback for reversal child {r.Child} was not accepted: {r.Callback.AcknowledgementCode}");
+            Assert.True(r.Sync.IsSuccess, $"sync completion for reversal child {r.Child} failed: {(r.Sync.IsFailure ? r.Sync.Error.ToString() : string.Empty)}");
+
+            Assert.Equal(ProcessingStatus.Success, (await _h.Load(r.Child)).ProcessingStatus);
+            Assert.Equal((ProcessingStatus.Reversed, FinancialStatus.Reversed), await Status(r.Payment));
+            Assert.Equal(1, await Journals($"TX:{r.Payment}:REVERSAL:{r.Child}")); // posted exactly once, never twice
         }
     }
 
@@ -366,6 +423,194 @@ public sealed class CallbackAndChildFinalizationTests(PostgresDatabaseFixture db
         Assert.Equal(("123456", "RRN000111"), (queryRow!.Stan, queryRow.Rrn));
     }
 
+    /// <summary>
+    /// T1 (external re-review, <c>review/RANSYS_Architecture_Review_b9616fb.md</c>): a callback that CONTRADICTS the
+    /// already-accepted result (e.g. FAILED arriving after an accepted SUCCESS/POSTED) produces
+    /// <see cref="TransitionKind.ConflictRecorded"/>, never <see cref="TransitionKind.Applied"/>. Its evidence must
+    /// never overwrite <see cref="Transaction.LatestProviderResult"/>: promoting a contradicting report to "the"
+    /// evidence would let GET/replay/child requests read the wrong reference/RRN/data for a transaction whose real,
+    /// accepted outcome never changed. The conflict itself stays fully visible via the reconciliation exception this
+    /// transition already records.
+    /// </summary>
+    [Fact]
+    public async Task Conflicting_callback_never_overwrites_the_accepted_evidence_projection()
+    {
+        var (payment, _) = await _h.ProcessingPayment();
+        await _h.StartAttempt(payment, _h.ProviderA);
+
+        var dataA = DataOf("field", "A");
+        var accepted = await _h.CallbackSink.SubmitAsync(
+            Callback(payment, ProviderOutcome.Success, providerReference: "PRV-A", providerStan: "STAN-A", providerRrn: "RRN-A", data: dataA),
+            CancellationToken.None);
+        Assert.Equal((true, ProviderCallbackSink.Applied), (accepted.Accepted, accepted.AcknowledgementCode));
+
+        // Sub-case 1: a conflicting FAILED report with its own concrete but different reference/RRN/data.
+        var dataB = DataOf("field", "B");
+        var conflict = await _h.CallbackSink.SubmitAsync(
+            Callback(payment, ProviderOutcome.Failed, providerReference: "PRV-B", providerStan: "STAN-B", providerRrn: "RRN-B", data: dataB),
+            CancellationToken.None);
+        Assert.Equal((true, ProviderCallbackSink.ConflictRecorded), (conflict.Accepted, conflict.AcknowledgementCode));
+        await AssertAcceptedEvidenceUnchanged(payment);
+        Assert.Equal(1, await Journals($"TX:{payment}:POST"));
+
+        // Sub-case 2: a conflicting FAILED report with NO reference/data at all must not clear the accepted projection.
+        var blankConflict = await _h.CallbackSink.SubmitAsync(
+            Callback(payment, ProviderOutcome.Failed, providerReference: null, providerStan: null, providerRrn: null, data: null),
+            CancellationToken.None);
+        Assert.Equal((true, ProviderCallbackSink.ConflictRecorded), (blankConflict.Accepted, blankConflict.AcknowledgementCode));
+        await AssertAcceptedEvidenceUnchanged(payment);
+
+        // Sub-case 3: repeating the SAME conflicting FAILED callback again must still leave the accepted evidence untouched.
+        var repeated = await _h.CallbackSink.SubmitAsync(
+            Callback(payment, ProviderOutcome.Failed, providerReference: "PRV-B", providerStan: "STAN-B", providerRrn: "RRN-B", data: dataB),
+            CancellationToken.None);
+        Assert.True(repeated.Accepted);
+        await AssertAcceptedEvidenceUnchanged(payment);
+        Assert.Equal(1, await Journals($"TX:{payment}:POST")); // still exactly one posting throughout
+
+        async Task AssertAcceptedEvidenceUnchanged(TransactionId id)
+        {
+            var reloaded = await _h.Load(id);
+            Assert.Equal((ProcessingStatus.Success, FinancialStatus.Posted, ReconciliationStatus.Exception),
+                (reloaded.ProcessingStatus, reloaded.FinancialStatus, reloaded.ReconciliationStatus));
+            Assert.NotNull(reloaded.LatestProviderResult);
+            Assert.Equal(ChangeSource.Callback, reloaded.LatestProviderResult!.Source);
+            Assert.Equal(
+                ("PRV-A", "STAN-A", "RRN-A"),
+                (reloaded.LatestProviderResult.Evidence.ProviderReference,
+                 reloaded.LatestProviderResult.Evidence.ProviderStan,
+                 reloaded.LatestProviderResult.Evidence.ProviderRrn));
+            Assert.Equal("A", FieldOf(reloaded.LatestProviderResult.Evidence.Data, "field"));
+        }
+    }
+
+    /// <summary>
+    /// T2-A (b9616fb): the sync path already completed the transaction to SUCCESS with minimal evidence (no
+    /// reference/RRN captured — the fix in <see cref="TransactionProcessingService.RecordInSessionAsync"/> did not
+    /// exist yet at that point of this scenario). A later callback reports the SAME already-accepted SUCCESS
+    /// (<see cref="TransitionKind.NoChange"/>) but with a fuller reference/RRN/data payload. Before the fix,
+    /// finalization returned before ever reaching the evidence write for <c>NoChange</c>, so this richer evidence was
+    /// silently dropped forever. No status/ledger/outbox effect should follow — only the projection enrichment.
+    /// </summary>
+    [Fact]
+    public async Task Callback_success_after_an_already_accepted_sync_success_still_enriches_the_projection()
+    {
+        var (payment, wallet) = await _h.ProcessingPayment();
+        await _h.StartAttempt(payment, _h.ProviderA);
+
+        Ok(await _h.Finalization.ApplyAsync(new ProviderResultCommand(payment, AttemptResolutionKind.Success, ChangeSource.SyncProviderResponse, "PROVIDER_SUCCESS")));
+        Assert.Equal((ProcessingStatus.Success, FinancialStatus.Posted), await Status(payment));
+        Assert.Null((await _h.Load(payment)).LatestProviderResult); // the sync path here passed no Evidence
+
+        var eventsBefore = await StatusEventCount(payment);
+        var dataFull = DataOf("field", "full");
+
+        var callback = await _h.CallbackSink.SubmitAsync(
+            Callback(payment, ProviderOutcome.Success, providerReference: "PRV-FULL", providerStan: "STAN-FULL", providerRrn: "RRN-FULL", data: dataFull),
+            CancellationToken.None);
+
+        Assert.Equal((true, ProviderCallbackSink.Duplicate), (callback.Accepted, callback.AcknowledgementCode));
+        var reloaded = await _h.Load(payment);
+        Assert.Equal((ProcessingStatus.Success, FinancialStatus.Posted), (reloaded.ProcessingStatus, reloaded.FinancialStatus));
+        Assert.NotNull(reloaded.LatestProviderResult);
+        Assert.Equal(ChangeSource.Callback, reloaded.LatestProviderResult!.Source);
+        Assert.Equal(
+            ("PRV-FULL", "STAN-FULL", "RRN-FULL"),
+            (reloaded.LatestProviderResult.Evidence.ProviderReference,
+             reloaded.LatestProviderResult.Evidence.ProviderStan,
+             reloaded.LatestProviderResult.Evidence.ProviderRrn));
+        Assert.Equal("full", FieldOf(reloaded.LatestProviderResult.Evidence.Data, "field"));
+        Assert.Equal(1, await Journals($"TX:{payment}:POST")); // no new posting from the NoChange-kind callback
+        Assert.Equal((897_500m, 897_500m, 0m), await Balances(wallet));
+        Assert.Equal(eventsBefore, await StatusEventCount(payment)); // no new/duplicate outbox status event
+    }
+
+    /// <summary>
+    /// T2-B (b9616fb): a callback PENDING arrives first, with temporary reference/data, while the primary attempt is
+    /// still in flight at the provider — it records that outcome on the attempt (ADR-005: the attempt had no
+    /// recorded outcome yet) and moves the transaction to PENDING. The SAME attempt's sync completion path then
+    /// resolves it to SUCCESS with its OWN, different, more final evidence
+    /// (<see cref="TransactionProcessingService.RecordInSessionAsync"/> now passes <c>Evidence</c> too). The real
+    /// interleaving is forced by submitting the callback from inside the scripted adapter's own response step, i.e.
+    /// while <see cref="TransactionProcessingService.PayAsync"/> is still awaiting the provider call.
+    /// </summary>
+    [Fact]
+    public async Task Sync_success_after_a_stale_pending_callback_projects_its_own_final_evidence()
+    {
+        var s = await _p.NewScenario();
+        var providerId = s.Providers[0].Id;
+        var command = Payment(s, 100_000m);
+
+        s.Adapter.Then(async (_, request, _) =>
+        {
+            var ack = await _p.Core.CallbackSink.SubmitAsync(
+                Callback(
+                    new TransactionId(request.RansysTransactionId), ProviderOutcome.Pending, ResultFinality.NonFinal,
+                    providerReference: "PRV-TEMP", providerStan: "STAN-TEMP", providerRrn: null, data: DataOf("field", "temp"),
+                    providerId: providerId.Value),
+                CancellationToken.None);
+            Assert.True(ack.Accepted);
+            return ScriptedProviderAdapter.Success(request, providerReference: "PRV-FINAL", rrn: "RRN-FINAL");
+        });
+
+        var result = Ok(await _p.Service.PayAsync(command));
+
+        Assert.Equal(ProcessingStatus.Success, result.ProcessingStatus);
+        Assert.Equal("RRN-FINAL", result.References.Rrn); // the immediate sync response already carries the final evidence
+
+        var reloaded = await _p.Core.Load(result.TransactionId);
+        Assert.NotNull(reloaded.LatestProviderResult);
+        Assert.Equal(ChangeSource.SyncProviderResponse, reloaded.LatestProviderResult!.Source);
+        Assert.Equal(
+            ("PRV-FINAL", "RRN-FINAL"),
+            (reloaded.LatestProviderResult.Evidence.ProviderReference, reloaded.LatestProviderResult.Evidence.ProviderRrn));
+
+        // ADR-005: the attempt's own recorded outcome stays the earlier PENDING one; only the projection carries the final report.
+        var attempt = Assert.Single(await _p.Core.LoadAttempts(result.TransactionId));
+        Assert.Equal("PRV-TEMP", attempt.Outcome!.ProviderReference);
+
+        // A replay of the same request must see the final evidence, never the stale PENDING one.
+        var replay = Ok(await _p.Service.PayAsync(command with { RequestTimestamp = DateTimeOffset.UtcNow.AddSeconds(5) }));
+        Assert.True(replay.IsReplay);
+        Assert.Equal("RRN-FINAL", replay.References.Rrn);
+    }
+
+    /// <summary>
+    /// T3 (b9616fb): the primary attempt times out with no RRN captured (transaction IN_DOUBT). A callback SUCCESS
+    /// then arrives with a concrete STAN/RRN. GET already preferred the projection (ADR-027); this asserts that a
+    /// REPLAY of the same original merchant request — the actual public POST, via
+    /// <see cref="TransactionProcessingService"/>, not only a query — shows the same references, and that the
+    /// provider adapter was invoked exactly once total across the original attempt and the replay.
+    /// </summary>
+    [Fact]
+    public async Task Replay_after_a_late_callback_shows_the_same_references_as_get_and_calls_the_provider_only_once()
+    {
+        var s = await _p.NewScenario();
+        s.Adapter.ThenHang(); // times out within the Core budget: IN_DOUBT, RequestSent=true, no RRN captured
+        var command = Payment(s, 100_000m);
+
+        var first = Ok(await _p.Service.PayAsync(command));
+        Assert.Equal(ProcessingStatus.InDoubt, first.ProcessingStatus);
+        Assert.Null(first.References.Rrn);
+
+        var callback = await _p.Core.CallbackSink.SubmitAsync(
+            Callback(
+                first.TransactionId, ProviderOutcome.Success,
+                providerReference: "PRV-LATE", providerStan: "STAN-LATE", providerRrn: "RRN-LATE", providerId: s.Providers[0].Id.Value),
+            CancellationToken.None);
+        Assert.True(callback.Accepted);
+
+        var detail = await _p.Service.GetTransactionAsync(s.Channel, first.TransactionId);
+        Assert.Equal(("STAN-LATE", "RRN-LATE"), (detail!.References.Stan, detail.References.Rrn));
+
+        var replay = Ok(await _p.Service.PayAsync(command with { RequestTimestamp = DateTimeOffset.UtcNow.AddSeconds(5) }));
+
+        Assert.True(replay.IsReplay);
+        Assert.Equal(first.TransactionId, replay.TransactionId);
+        Assert.Equal(("STAN-LATE", "RRN-LATE"), (replay.References.Stan, replay.References.Rrn));
+        Assert.Equal(1, s.Adapter.CallCount); // the provider was invoked exactly once total; the replay makes no new call
+    }
+
     private async Task<(TransactionId Payment, WalletId Wallet)> PostedPayment(FeeRefundPolicy policy)
     {
         var (payment, wallet) = await _h.ProcessingPayment(feePolicy: policy);
@@ -381,16 +626,41 @@ public sealed class CallbackAndChildFinalizationTests(PostgresDatabaseFixture db
         bool requestSent = true,
         string? providerReference = "PRV-CB",
         string? providerStan = null,
-        string? providerRrn = null)
+        string? providerRrn = null,
+        IReadOnlyDictionary<string, JsonElement>? data = null,
+        Guid? providerId = null)
     {
         var references = new ProviderTransactionReferences("REF", null, null, null, providerReference, providerStan, providerRrn, ImmutableDictionary<string, string>.Empty);
         var result = new ProviderResult(
             outcome, finality, new ProviderTransportResult(transport, requestSent, null, null, null),
             outcome == ProviderOutcome.Success ? "0000" : "1001", "00", "callback", references,
-            ImmutableDictionary<string, JsonElement>.Empty, null, DateTimeOffset.UtcNow, null, null);
+            data ?? ImmutableDictionary<string, JsonElement>.Empty, null, DateTimeOffset.UtcNow, null, null);
         return new ProviderCallback(
-            db.Seed.ProviderAId, $"CB-{Guid.NewGuid():N}", transaction.Value, "PRV-CB", result,
+            providerId ?? db.Seed.ProviderAId, $"CB-{Guid.NewGuid():N}", transaction.Value, "PRV-CB", result,
             new CorrelationContext(transaction.Value, transaction.ToString(), "trace"), DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>A scenario-scoped payment command (<see cref="ProcessingHarness"/>), for T2-B/T3's real service interleaving.</summary>
+    private static PaymentCommand Payment(Scenario s, decimal amount) =>
+        new(s.Channel, s.Merchant, $"REF-{Guid.CreateVersion7():N}", null, s.ProductCode, new MoneyInput(amount, "IDR"),
+            new CustomerInput(CustomerId: "CUST-1"), null, new EndpointInput(EndpointType.Biller, "PLN-1"), null, DateTimeOffset.UtcNow);
+
+    private static IReadOnlyDictionary<string, JsonElement> DataOf(string field, string value) =>
+        ImmutableDictionary<string, JsonElement>.Empty.Add(field, JsonSerializer.SerializeToElement(value));
+
+    private static string? FieldOf(IReadOnlyDictionary<string, JsonElement>? data, string field) =>
+        data is not null && data.TryGetValue(field, out var value) ? value.GetString() : null;
+
+    /// <summary>Runs a task with a generous but finite timeout, so a genuine hang fails clearly instead of blocking the suite.</summary>
+    private static async Task<T> Bounded<T>(Task<T> task, string label, TimeSpan? timeout = null)
+    {
+        var completed = await Task.WhenAny(task, Task.Delay(timeout ?? TimeSpan.FromSeconds(30)));
+        if (!ReferenceEquals(completed, task))
+        {
+            throw new TimeoutException($"{label} did not complete within the bounded wait.");
+        }
+
+        return await task;
     }
 
     private async Task<(ProcessingStatus, FinancialStatus)> Status(TransactionId id)
@@ -401,6 +671,11 @@ public sealed class CallbackAndChildFinalizationTests(PostgresDatabaseFixture db
 
     private Task<int> Journals(string key) =>
         _h.Query<int>("SELECT count(*)::int FROM ledger.ledger_transactions WHERE posting_key = @key", new { key });
+
+    private Task<int> StatusEventCount(TransactionId id) =>
+        _h.Query<int>(
+            "SELECT count(*)::int FROM async.outbox_events WHERE aggregate_id = @id AND aggregate_type = 'TRANSACTION'",
+            new { id = id.Value });
 
     private Task<decimal> JournalTotal(string key) =>
         _h.Query<decimal>(

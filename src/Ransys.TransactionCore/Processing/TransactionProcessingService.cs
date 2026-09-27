@@ -819,7 +819,8 @@ public sealed class TransactionProcessingService(
             session,
             new ProviderResultCommand(
                 current.Id, resolution, ChangeSource.SyncProviderResponse, interpreted.ReasonCode,
-                resolution == AttemptResolutionKind.InDoubt ? RansysResponseCodes.InDoubt : interpreted.ResponseCode, attempt.Id),
+                resolution == AttemptResolutionKind.InDoubt ? RansysResponseCodes.InDoubt : interpreted.ResponseCode, attempt.Id,
+                Evidence: interpreted.Outcome),
             CancellationToken.None);
         if (applied.IsFailure)
         {
@@ -909,7 +910,8 @@ public sealed class TransactionProcessingService(
             session,
             new ProviderResultCommand(
                 transaction.Id, AttemptResolutionKind.InDoubt, ChangeSource.SyncProviderResponse, ReasonFinalizationFailed,
-                RansysResponseCodes.InDoubt, attempt.Id, $"Provider result {interpreted.ReasonCode} could not be applied."),
+                RansysResponseCodes.InDoubt, attempt.Id, $"Provider result {interpreted.ReasonCode} could not be applied.",
+                Evidence: interpreted.Outcome),
             CancellationToken.None);
 
         // A transaction that is already final cannot go IN_DOUBT; the recorded outcome is kept for reconciliation.
@@ -944,8 +946,14 @@ public sealed class TransactionProcessingService(
 
     // ------------------------------------------------------------------ mapping
 
-    private TransactionProcessingResult Build(Transaction transaction, AttemptOutcome? outcome, IReadOnlyDictionary<string, JsonElement> data, bool isReplay)
+    private TransactionProcessingResult Build(
+        Transaction transaction, AttemptOutcome? attemptOutcome, IReadOnlyDictionary<string, JsonElement> fallbackData, bool isReplay)
     {
+        // T3 (ADR-027): one accepted-result selection feeds both references and data, so a replayed POST of the same
+        // idempotent request shows the same STAN/RRN/data as GET — the transaction's latest accepted provider evidence,
+        // never a stale attempt's own outcome once a later report has superseded it.
+        var accepted = transaction.LatestProviderResult?.Evidence ?? attemptOutcome;
+        var data = accepted?.Data ?? fallbackData;
         var code = RansysResponseCodes.ForTransaction(transaction.ProcessingStatus, transaction.ResponseCode);
         return new TransactionProcessingResult(
             transaction.Id,
@@ -956,8 +964,8 @@ public sealed class TransactionProcessingService(
             RansysResponseCodes.MessageFor(code, transaction.ProcessingStatus),
             new PublicReferences(
                 transaction.References.MerchantReference,
-                outcome?.ProviderStan ?? transaction.References.Stan,
-                outcome?.ProviderRrn ?? transaction.References.Rrn),
+                accepted?.ProviderStan ?? transaction.References.Stan,
+                accepted?.ProviderRrn ?? transaction.References.Rrn),
             data,
             clock.UtcNow,
             isReplay);

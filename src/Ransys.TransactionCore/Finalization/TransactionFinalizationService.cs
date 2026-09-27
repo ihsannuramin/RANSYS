@@ -195,6 +195,19 @@ public sealed class TransactionFinalizationService
         var outcome = transition.Value;
         if (outcome.Kind == TransitionKind.NoChange)
         {
+            // T2-A: a duplicate/consistent report of the already-accepted resolution may still carry richer evidence
+            // (e.g. a later callback confirming what sync already recorded, or vice versa) than what's stored so far.
+            // No status/ledger/outbox change is needed — only the evidence projection, if any was supplied.
+            if (command.Evidence is not null)
+            {
+                transaction.RecordLatestProviderResult(command.Evidence, command.Source, _clock.UtcNow);
+                var savedEvidence = await _transactions.UpdateAsync(session, transaction, cancellationToken);
+                if (savedEvidence.IsFailure)
+                {
+                    return savedEvidence.Error;
+                }
+            }
+
             return Snapshot(outcome, transaction);
         }
 
@@ -205,8 +218,11 @@ public sealed class TransactionFinalizationService
         }
 
         // ADR-027: the transaction the callback directly targets (the child itself, for a child callback) gets the
-        // latest-evidence projection; the parent (if any) is updated by its own helper below when it applies.
-        if (command.Evidence is not null)
+        // latest-evidence projection; the parent (if any) is updated by its own helper below when it applies. A
+        // conflicting report (TransitionKind.ConflictRecorded) never overwrites the projection: it contradicts the
+        // already-accepted resolution, so its evidence is not authoritative — only a genuinely accepted transition
+        // (TransitionKind.Applied) may update what readers treat as the transaction's business result.
+        if (outcome.Kind == TransitionKind.Applied && command.Evidence is not null)
         {
             transaction.RecordLatestProviderResult(command.Evidence, command.Source, _clock.UtcNow);
         }

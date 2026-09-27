@@ -108,8 +108,34 @@ Option 3.
   child provider requests read the latest known evidence, not necessarily the first-recorded one.
 - `transaction_attempts` keeps its ADR-005 immutability guarantee unconditionally; this ADR adds a projection
   alongside it, not a way around it.
-- The projection is fed only by callback-sourced evidence today (`ProviderCallbackSink` is the only caller that
-  passes `Evidence`); status check, advice and reconciliation results can pass it too by supplying `Evidence` on
-  their own `ProviderResultCommand` once they need the same guarantee, with no further schema change.
+- The projection is fed by any caller of `TransactionFinalizationService.ApplyAsync` that supplies `Evidence` on its
+  `ProviderResultCommand` — today that is `ProviderCallbackSink` (every callback) and `TransactionProcessingService`
+  (both the sync completion path in `RecordInSessionAsync` and its `MarkInDoubtAsync` fallback); status check,
+  advice and reconciliation results can join the same guarantee later, with no further schema change.
+
+### Precedence: accepted result vs. conflict evidence (RR3 follow-up)
+An external re-review (`review/RANSYS_Architecture_Review_b9616fb.md`, T1/T2) found that "always overwrite" was too
+broad: `TransactionFinalizationService.ApplyAsync` produces three kinds of `TransitionOutcome`
+(`TransactionCore/Finalization/TransactionFinalizationService.cs`, `Domain/Transactions/StateTransitions.cs`), and
+they do not all deserve the same treatment of the transaction the projection describes:
+- **`TransitionKind.Applied`** — a genuinely new accepted transition (first SUCCESS/FAILED, or a state change the
+  domain allows). Its evidence, if any, **always updates** `LatestProviderResult`: this is exactly the case ADR-027
+  was written for.
+- **`TransitionKind.NoChange`** — a duplicate/late report that *agrees* with the already-accepted resolution (e.g. a
+  callback confirming a SUCCESS the sync path already recorded, or the reverse). No status/ledger/outbox effect
+  follows, but its evidence can still be strictly richer than what is stored (a fuller reference/RRN/business data
+  payload) — so it **also updates** `LatestProviderResult`, on its own (no ledger action, no status event; only the
+  projection column write, same database transaction).
+- **`TransitionKind.ConflictRecorded`** (`Transaction.CompleteSuccess`/`CompleteFailure`'s `RecordConflict` branches)
+  — a report that *contradicts* the already-accepted resolution (e.g. FAILED arriving after an accepted
+  SUCCESS/POSTED). This only ever moves `ReconciliationStatus` to `EXCEPTION`; the transaction's real financial
+  outcome does not change. Its evidence **never updates** `LatestProviderResult`: promoting a contradicting report to
+  "the" business result for GET/replay/child requests would let a wrong or malicious later message silently rewrite
+  the reference/RRN/data of a transaction that already posted or already failed for real. The conflict itself stays
+  fully visible through the reconciliation-exception reason code/description this transition already records; a
+  separate conflict-evidence log is out of scope here.
+
+In short: `LatestProviderResult` represents the **accepted** result, not merely the **most recently received** one.
+`Applied` and `NoChange` both refine that accepted picture; `ConflictRecorded` never does.
 - Out of scope: this does not change what counts as a valid transition, ADR-012/023/019's child semantics, or
   ADR-018's `PROTOCOL_ERROR` handling.
