@@ -83,7 +83,8 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 | 12e Merchant API endpoints (`Ransys.Api`) | Done |
 | 12f API/security/contract tests (`tests/Ransys.Api.Tests`) | Done |
 | 12g Milestone 12 documentation | Done |
-| 13 Architecture review remediation (`review/RANSYS_Architecture_Review_f1fbefe.md`) | Done — see below |
+| 13 Architecture review remediation, round 1 (`review/RANSYS_Architecture_Review_f1fbefe.md`, R1-R6) | Implemented — see below |
+| 14 Architecture re-review remediation (`review/RANSYS_Architecture_ReReview_1fc9d10.md`, RR1-RR3) | Implemented — see below |
 
 ## Phase 1 Definition of Done (main.md §28)
 
@@ -132,26 +133,34 @@ Contracts: `docs/RANSYS_OpenAPI_v1.yaml`, `docs/RANSYS_Provider_Adapter_Contract
 
 Remaining TODOs: Response Code Catalog v1 (only approved codes are used; frozen wallet and unmapped failures fall back to 1001), the signature profile and production authenticator, real provider adapters and their configuration, inquiry default currency, a hosted recovery worker schedule, outbox consumers (Backoffice), the circuit breaker, and the final VOID financial semantics (ADR-019).
 
-## Architecture review remediation — Milestone 13
+## Architecture review remediation — Milestones 13-14
 
-An external architecture review (`review/RANSYS_Architecture_Review_f1fbefe.md`, HEAD `f1fbefe`) found three P1 correctness issues and three P2 issues in the Milestone 12 work above. All six are fixed:
+An external architecture review (`review/RANSYS_Architecture_Review_f1fbefe.md`, HEAD `f1fbefe`) found three P1 correctness issues and three P2 issues in the Milestone 12 work above. Round 1 fixed all six:
 
 | ID | Finding | Fix | Commit |
 |---|---|---|---|
-| R1 | Provider callback validation raced finalization (unlocked read, separate later lock) | `ProviderCallbackSink` now takes one continuous `FOR UPDATE` lock for the whole call; provider-mismatch check and attempt correlation both run under it | `4e8edf5` |
-| R2 | Callback-resolved attempts never got their provider reference/STAN/RRN persisted | The sink now calls `TransactionAttemptService.RecordOutcomeAsync` (ADR-005 exactly-once) before finalizing, so callback evidence is available to GET and to child (refund/reversal) provider requests | `4e8edf5` |
+| R1 | Provider callback validation raced finalization (unlocked read, separate later lock) | `ProviderCallbackSink` took one continuous `FOR UPDATE` lock for the whole call | `4e8edf5` (superseded, see RR1 below) |
+| R2 | Callback-resolved attempts never got their provider reference/STAN/RRN persisted | The sink called `TransactionAttemptService.RecordOutcomeAsync` before finalizing | `4e8edf5` (superseded, see RR2 below) |
 | R3 | A retry could fail (`ProductNotAvailable`/`WalletNotFound`/conflict) if reference data drifted after the original request | `IdempotencyService.PeekActiveAsync` runs before any reference-data resolution; a replay's fingerprint is anchored to the original transaction's own product/currency snapshot, never live "currently active" data (ADR-025) | `93f6396` |
 | R4 | A replay of a completed transaction always returned empty `data` (e.g. inquiry `billAmount` lost) | Business response data is now a promoted canonical field, `transaction_attempts.response_data` (migration `0009`, ADR-026), and replay returns the latest resolved attempt's data | `bd80418` |
 | R5 | `AttemptRecoveryService` marked a transaction IN_DOUBT without ever publishing a `TRANSACTION_IN_DOUBT` outbox event | Recovery now shares `TransactionStatusEvents.Build` with `TransactionFinalizationService` and enqueues the same event, in the same session, exactly once | `a2b9039` |
-| R6 | CLAUDE.md/README.md contained stale/contradictory passages (this section, the ADR index, the milestone table, the DB-unavailable claim, the posting-key example, ADR status categorization) | This documentation pass | — |
+| R6 | CLAUDE.md/README.md contained stale/contradictory passages | Documentation pass | `1fc9d10` |
 
-Two new ADRs came out of this: ADR-025 (idempotency replay anchors to the original transaction's snapshot) and ADR-026 (persisted response-data snapshot for replay), both Accepted as correctness fixes under already-established rules (ADR-006, ADR-009, and the "fields that come into common use get promoted to canonical fields" convention), not new open product decisions.
+An external **re-review** of that round (`review/RANSYS_Architecture_ReReview_1fc9d10.md`, HEAD `1fc9d10`) found that the R1/R2 fix (`4e8edf5`) itself had two new P1 regressions, plus a P2 documentation gap. Round 2 fixes both P1s by removing the sink's own locking/correlation entirely rather than patching it again:
 
-Final verification for this milestone: `dotnet build Ransys.sln` — 0 warnings, 0 errors; `dotnet test Ransys.sln` against real PostgreSQL (`RANSYS_TEST_PG`) — **1,446 passed, 0 failed, 0 skipped** across all 8 test projects (`.NET 10.0.401`, local PostgreSQL 18), at commit `a2b9039`. Not pushed to GitHub pending review.
+| ID | Finding | Fix | Commit |
+|---|---|---|---|
+| RR1 | `ProviderCallbackSink` locked its own target (the **child**, for refund/reversal/void) before calling finalization, which locks parent-then-child — opposite lock order from the sync path on the same rows, a real deadlock risk | `TransactionFinalizationService.ApplyAsync` is now the **only** lock-order implementation (peek → lock parent if child → lock target). `ProviderResultCommand` gained `ExpectedProvider`/`Evidence`; the sink no longer locks or correlates anything itself, it just calls `ApplyAsync` | `a2ce9f6` |
+| RR2 | A callback arriving after an attempt's outcome was already recorded (sync TIMEOUT, a PENDING callback, or recovery's synthetic outcome) applied its result to the transaction but silently dropped its provider reference/STAN/RRN/response data, since `transaction_attempts` is correctly immutable once recorded | A new always-overwritable projection, `Transaction.LatestProviderResult` (migration `0010`, ADR-027), captures it on `core.transactions` itself. GET, child provider requests (`OriginalProviderReferences.From`) and replay prefer it over the attempt-outcome fallback when present; `transaction_attempts`/ADR-005 immutability is untouched | `a2ce9f6` |
+| RR3 | This documentation still said "all six fixed", didn't state the callback's lock order, ADR-026 overclaimed, and a couple of stale/ambiguous references | This documentation pass | `1fc9d10` (partial) + this commit |
+
+ADR-027 (persisted "latest provider result" projection for late/final async reports) is new; ADR-026 was amended with one sentence clarifying it only covers the *first-ever-recorded* outcome case.
+
+Final verification for round 2: `dotnet build Ransys.sln` — 0 warnings, 0 errors; `dotnet test Ransys.sln` against real PostgreSQL (`RANSYS_TEST_PG`) — **1,449 passed, 0 failed, 0 skipped** across all 8 test projects (`.NET 10.0.401`, local PostgreSQL 18), at commit `a2ce9f6`; the new lock-order concurrency test was additionally run 8× in a loop with no deadlock or flaky failure. Commits through `1fc9d10` are on `origin/main`; `a2ce9f6` (this round's fix) is local only, not yet pushed, pending the reviewer's own re-verification — this documentation reflects implementer completion, not a reviewer sign-off.
 
 ## Architecture decisions
 
-All decisions are recorded in [`docs/decisions/`](docs/decisions/) (ADR-001 … ADR-026).
+All decisions are recorded in [`docs/decisions/`](docs/decisions/) (ADR-001 … ADR-027).
 
 Decided and implemented (product owner accepted):
 
@@ -164,7 +173,8 @@ Decided and implemented (product owner accepted):
 - ADR-020 (interim): minimal fee resolver (`FeeResolver`): active FEE version, FIXED or PERCENTAGE (decimal rate) × amount, clamp min/max, half away from zero to scale, merchant-specific rule wins, ambiguous ⇒ fail closed, no rule/version ⇒ zero fee, refund policy NONE.
 - ADR-021: API error mapping — HTTP status per business/validation outcome (ADR-021's own file: Status Accepted).
 - ADR-025: idempotent replay anchors to the original transaction's own product/currency snapshot; the existing-claim lookup now runs before any reference-data resolution. Correctness fix, not a new open decision.
-- ADR-026: business response data (e.g. inquiry `billAmount`) is a promoted canonical field, `transaction_attempts.response_data` — distinct from `Metadata`'s provider-extension purpose — so a replay returns the same data the original response had.
+- ADR-026: business response data (e.g. inquiry `billAmount`) is a promoted canonical field, `transaction_attempts.response_data` — distinct from `Metadata`'s provider-extension purpose — so a replay returns the same data the original response had. Covers only the first-ever-recorded attempt outcome; see ADR-027 for later reports.
+- ADR-027: a later/final async report (e.g. a SUCCESS callback after a recorded TIMEOUT) can't overwrite the now-immutable attempt outcome, so its evidence is captured on `Transaction.LatestProviderResult`, an always-overwritable projection on `core.transactions` (migration `0010`) read by GET, child provider requests and replay in preference to the attempt-outcome fallback.
 
 Implemented, pending product-owner acceptance (each ADR file's own Status line still says "Proposed" — do not read the implementation as a decision already signed off):
 
