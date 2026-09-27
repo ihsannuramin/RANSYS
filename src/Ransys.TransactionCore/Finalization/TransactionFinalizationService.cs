@@ -202,13 +202,44 @@ public sealed class TransactionFinalizationService
             if (command.Evidence is not null)
             {
                 var merge = transaction.MergeLatestProviderResult(command.Evidence, command.Source, _clock.UtcNow);
-                if (merge is ProviderResultMergeOutcome.Recorded or ProviderResultMergeOutcome.Enriched)
+                switch (merge)
                 {
-                    var savedEvidence = await _transactions.UpdateAsync(session, transaction, cancellationToken);
-                    if (savedEvidence.IsFailure)
-                    {
-                        return savedEvidence.Error;
-                    }
+                    case ProviderResultMergeOutcome.Recorded or ProviderResultMergeOutcome.Enriched:
+                        var savedEvidence = await _transactions.UpdateAsync(session, transaction, cancellationToken);
+                        if (savedEvidence.IsFailure)
+                        {
+                            return savedEvidence.Error;
+                        }
+
+                        break;
+
+                    case ProviderResultMergeOutcome.ConflictingIdentity:
+                        // V2 (ADR-027 revised): never silently swallow a conflicting reference/STAN/RRN as an
+                        // ordinary duplicate. Record it through the same reconciliation-exception mechanism a
+                        // status-level conflict already uses (idempotent when already EXCEPTION), persist it, and
+                        // enqueue its status event so the conflict is durable and observable, not just returned
+                        // from this call and discarded.
+                        var conflict = transaction.RecordProviderEvidenceConflict(context.Value);
+                        if (conflict.IsFailure)
+                        {
+                            return conflict.Error;
+                        }
+
+                        var savedConflict = await _transactions.UpdateAsync(session, transaction, cancellationToken);
+                        if (savedConflict.IsFailure)
+                        {
+                            return savedConflict.Error;
+                        }
+
+                        if (conflict.Value.Changes.Count > 0)
+                        {
+                            await EnqueueStatusEventAsync(session, transaction, previous, conflict.Value, command.Source, cancellationToken);
+                        }
+
+                        return Snapshot(conflict.Value, transaction);
+
+                    case ProviderResultMergeOutcome.IgnoredNoIdentity:
+                        break;
                 }
             }
 

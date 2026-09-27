@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using System.Text.Json;
 using Ransys.Adapter.Contracts.V1;
+using Ransys.Contracts.Events;
 using Ransys.Domain;
 using Ransys.Domain.Attempts;
 using Ransys.Domain.Common;
@@ -684,9 +685,12 @@ public sealed class CallbackAndChildFinalizationTests(PostgresDatabaseFixture db
     }
 
     /// <summary>
-    /// U1-3: SUCCESS reference A, then SUCCESS again with a different, non-null reference B. Both reports say SUCCESS
-    /// (<see cref="TransitionKind.NoChange"/> at the domain level), but A must never be silently replaced by B — a
-    /// genuinely different provider identity is a conflict, not richer evidence.
+    /// U1-3 / V2 (corrected): SUCCESS reference A, then SUCCESS again with a different, non-null reference B. Both
+    /// reports say SUCCESS (<see cref="TransitionKind.NoChange"/> at the domain level), but A must never be silently
+    /// replaced by B — a genuinely different provider identity is a conflict, not richer evidence. V2 fixed the sink
+    /// ack for this exact scenario: the conflict used to be swallowed and acked as an ordinary <c>Duplicate</c>; it
+    /// must now surface as <see cref="ProviderCallbackSink.ConflictRecorded"/>, the same durable, observable outcome
+    /// a status-level contradiction already gets.
     /// </summary>
     [Fact]
     public async Task Success_report_with_a_different_reference_never_silently_replaces_the_accepted_one()
@@ -702,7 +706,7 @@ public sealed class CallbackAndChildFinalizationTests(PostgresDatabaseFixture db
         var different = await _h.CallbackSink.SubmitAsync(
             Callback(payment, ProviderOutcome.Success, providerReference: "PRV-B", providerStan: "STAN-B", providerRrn: "RRN-B"),
             CancellationToken.None);
-        Assert.Equal((true, ProviderCallbackSink.Duplicate), (different.Accepted, different.AcknowledgementCode));
+        Assert.Equal((true, ProviderCallbackSink.ConflictRecorded), (different.Accepted, different.AcknowledgementCode));
 
         var reloaded = await _h.Load(payment);
         Assert.Equal(
@@ -711,6 +715,155 @@ public sealed class CallbackAndChildFinalizationTests(PostgresDatabaseFixture db
              reloaded.LatestProviderResult.Evidence.ProviderStan,
              reloaded.LatestProviderResult.Evidence.ProviderRrn));
     }
+
+    /// <summary>
+    /// V1/V2 (<c>review/RANSYS_Review_Progress_2ff8477.md</c>): a callback SUCCESS with reference A, followed by a
+    /// callback SUCCESS with a genuinely different reference B, must not be silently dropped as an ordinary
+    /// duplicate. The accepted projection must stay A, reconciliation must become EXCEPTION, a durable
+    /// <see cref="TransactionEventTypes.ReconExceptionCreated"/> outbox event must exist, and the sink must ack with
+    /// <see cref="ProviderCallbackSink.ConflictRecorded"/>, never <see cref="ProviderCallbackSink.Duplicate"/>.
+    /// Repeating the SAME conflicting B report must be fully idempotent: no additional ledger posting and no
+    /// additional outbox row.
+    /// </summary>
+    [Fact]
+    public async Task Conflicting_identity_report_is_recorded_as_a_durable_recon_exception_and_repeats_idempotently()
+    {
+        var (payment, wallet) = await _h.ProcessingPayment();
+        await _h.StartAttempt(payment, _h.ProviderA);
+
+        var accepted = await _h.CallbackSink.SubmitAsync(
+            Callback(payment, ProviderOutcome.Success, providerReference: "PRV-A", providerStan: "STAN-A", providerRrn: "RRN-A"),
+            CancellationToken.None);
+        Assert.Equal((true, ProviderCallbackSink.Applied), (accepted.Accepted, accepted.AcknowledgementCode));
+
+        var conflict = await _h.CallbackSink.SubmitAsync(
+            Callback(payment, ProviderOutcome.Success, providerReference: "PRV-B", providerStan: "STAN-B", providerRrn: "RRN-B"),
+            CancellationToken.None);
+        Assert.Equal((true, ProviderCallbackSink.ConflictRecorded), (conflict.Accepted, conflict.AcknowledgementCode));
+
+        var reloaded = await _h.Load(payment);
+        Assert.Equal(ReconciliationStatus.Exception, reloaded.ReconciliationStatus);
+        Assert.Equal(
+            ("PRV-A", "STAN-A", "RRN-A"),
+            (reloaded.LatestProviderResult!.Evidence.ProviderReference,
+             reloaded.LatestProviderResult.Evidence.ProviderStan,
+             reloaded.LatestProviderResult.Evidence.ProviderRrn));
+
+        var reconEventsAfterFirst = await EventCount(payment, TransactionEventTypes.ReconExceptionCreated);
+        Assert.Equal(1, reconEventsAfterFirst);
+        var postingsAfterFirst = await Journals($"TX:{payment}:POST");
+        var outboxAfterFirst = await StatusEventCount(payment);
+
+        // Repeating the SAME conflicting report must be idempotent: no new posting, no new outbox row.
+        var repeated = await _h.CallbackSink.SubmitAsync(
+            Callback(payment, ProviderOutcome.Success, providerReference: "PRV-B", providerStan: "STAN-B", providerRrn: "RRN-B"),
+            CancellationToken.None);
+        Assert.True(repeated.Accepted);
+
+        Assert.Equal(reconEventsAfterFirst, await EventCount(payment, TransactionEventTypes.ReconExceptionCreated));
+        Assert.Equal(postingsAfterFirst, await Journals($"TX:{payment}:POST"));
+        Assert.Equal(outboxAfterFirst, await StatusEventCount(payment));
+        var reloadedAgain = await _h.Load(payment);
+        Assert.Equal(
+            ("PRV-A", "STAN-A", "RRN-A"),
+            (reloadedAgain.LatestProviderResult!.Evidence.ProviderReference,
+             reloadedAgain.LatestProviderResult.Evidence.ProviderStan,
+             reloadedAgain.LatestProviderResult.Evidence.ProviderRrn));
+    }
+
+    /// <summary>
+    /// V3 (<c>review/RANSYS_Review_Progress_2ff8477.md</c>): a callback PENDING stores a temporary reference on the
+    /// attempt (ADR-005, immutable once recorded); the sync completion then resolves SUCCESS with genuinely empty
+    /// final evidence — the accepted projection has no reference at all, which is a deliberate <c>Applied</c>-replace
+    /// (ADR-027), not a gap to fall back from. A refund/reversal CHILD's outgoing provider request must see the same
+    /// rule GET/replay already use: an existing (even empty) projection wins over the immutable attempt scan, so the
+    /// superseded "PRV-TEMP" must never leak into the child's actual outgoing request. Driven through the real
+    /// processing path end to end (<see cref="TransactionProcessingService"/>), inspecting the scripted adapter's own
+    /// recorded call, not just the projection.
+    /// </summary>
+    [Fact]
+    public async Task Child_provider_request_never_uses_a_superseded_pending_reference_once_a_referenceless_success_is_accepted()
+    {
+        var s = await _p.NewScenario();
+        var providerId = s.Providers[0].Id;
+        var command = Payment(s, 100_000m);
+
+        s.Adapter.Then(async (_, request, _) =>
+        {
+            var ack = await _p.Core.CallbackSink.SubmitAsync(
+                Callback(
+                    new TransactionId(request.RansysTransactionId), ProviderOutcome.Pending, ResultFinality.NonFinal,
+                    providerReference: "PRV-TEMP", providerStan: "STAN-TEMP", providerRrn: null, providerId: providerId.Value),
+                CancellationToken.None);
+            Assert.True(ack.Accepted);
+
+            // The final sync response, with NO reference at all (Applied-replace: this supersedes the PENDING temp reference).
+            return ScriptedProviderAdapter.Response(
+                request, ProviderOutcome.Success, ResultFinality.Definitive, "0000", "00", providerReference: null, rrn: null, data: null);
+        });
+
+        var result = Ok(await _p.Service.PayAsync(command));
+        Assert.Equal(ProcessingStatus.Success, result.ProcessingStatus);
+
+        var original = await _p.Core.Load(result.TransactionId);
+        Assert.NotNull(original.LatestProviderResult);
+        Assert.Null(original.LatestProviderResult!.Evidence.ProviderReference); // the accepted projection has no reference
+
+        // Now actually start and complete a REFUND child through the real processing path, and inspect the ACTUAL
+        // outgoing provider request the scripted adapter received.
+        var refund = Ok(await _p.Service.RefundAsync(new RefundCommand(
+            s.Channel, s.Merchant, $"REF-{Guid.CreateVersion7():N}", null, result.TransactionId.Value,
+            new MoneyInput(50_000m, "IDR"), "partial refund", DateTimeOffset.UtcNow)));
+        Assert.Equal(ProcessingStatus.Success, refund.ProcessingStatus);
+
+        var refundCall = s.Adapter.Calls[1]; // [0] = the original payment, [1] = the refund child
+        Assert.Equal(nameof(IProviderAdapter.RefundAsync), refundCall.Operation);
+        Assert.Null(refundCall.Request.References.ProviderReference);
+        Assert.Null(refundCall.Request.References.ProviderStan);
+        Assert.NotEqual("PRV-TEMP", refundCall.Request.References.ProviderReference);
+    }
+
+    /// <summary>
+    /// V3 companion: a legacy transaction that never had a callback at all — only ever went through the sync path
+    /// with a real, non-empty attempt outcome and no <see cref="Transaction.LatestProviderResult"/> projection at
+    /// all (simulated here by clearing the projection columns directly, as a pre-ADR-027/legacy row would be, the
+    /// same technique <see cref="Replay_of_a_legacy_row_with_no_projection_still_falls_back_to_the_attempts_own_data"/>
+    /// uses). The attempt-scan fallback must still supply the correct reference to a child request in this case: V3
+    /// only removed the "projection exists but is empty" fallback, never the "no projection exists" one.
+    /// </summary>
+    [Fact]
+    public async Task Child_provider_request_still_falls_back_to_attempt_scan_when_the_original_has_no_projection_at_all()
+    {
+        var s = await _p.NewScenario();
+        s.Adapter.ThenResult(r => ScriptedProviderAdapter.Success(r, providerReference: "PRV-LEGACY", rrn: "RRN-LEGACY"));
+
+        var result = Ok(await _p.Service.PayAsync(Payment(s, 100_000m)));
+        Assert.Equal(ProcessingStatus.Success, result.ProcessingStatus);
+
+        await _p.Execute(
+            """
+            UPDATE core.transactions SET
+                latest_result_provider_reference = NULL, latest_result_provider_stan = NULL, latest_result_provider_rrn = NULL,
+                latest_result_data = NULL, latest_result_source = NULL, latest_result_recorded_at = NULL
+            WHERE ransys_transaction_id = @id
+            """,
+            new { id = result.TransactionId.Value });
+        Assert.Null((await _p.Core.Load(result.TransactionId)).LatestProviderResult);
+
+        var refund = Ok(await _p.Service.RefundAsync(new RefundCommand(
+            s.Channel, s.Merchant, $"REF-{Guid.CreateVersion7():N}", null, result.TransactionId.Value,
+            new MoneyInput(50_000m, "IDR"), "partial refund", DateTimeOffset.UtcNow)));
+        Assert.Equal(ProcessingStatus.Success, refund.ProcessingStatus);
+
+        var refundCall = s.Adapter.Calls[1];
+        Assert.Equal(nameof(IProviderAdapter.RefundAsync), refundCall.Operation);
+        Assert.Equal(("PRV-LEGACY", "RRN-LEGACY"), (refundCall.Request.References.ProviderReference, refundCall.Request.References.ProviderRrn));
+    }
+
+    private Task<int> EventCount(TransactionId id, string eventType) =>
+        _h.Query<int>(
+            "SELECT count(*)::int FROM async.outbox_events WHERE aggregate_id = @id AND event_type = @eventType",
+            new { id = id.Value, eventType });
 
     /// <summary>
     /// U1-4: a complete SUCCESS callback (reference A, full data) arrives WHILE the sync completion path is still

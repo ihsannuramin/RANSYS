@@ -39,6 +39,13 @@ public static class ReasonCodes
     public const string ConflictingProviderResult = "CONFLICTING_PROVIDER_RESULT";
     public const string ReversalDeclined = "REVERSAL_DECLINED";
 
+    /// <summary>
+    /// V2 (ADR-027 revised): a later report's provider reference/STAN/RRN conflicts, field-by-field, with the
+    /// already-accepted evidence for a status that itself was otherwise a consistent duplicate (NoChange). Distinct
+    /// from <see cref="ConflictingProviderResult"/>, which is a status-level contradiction (e.g. FAILED after SUCCESS).
+    /// </summary>
+    public const string ConflictingProviderEvidence = "CONFLICTING_PROVIDER_EVIDENCE";
+
     /// <summary>Attempt left without a recorded outcome (e.g. Core restart mid-call); ADR-005 recovery.</summary>
     public const string AttemptOutcomeUnknown = "ATTEMPT_OUTCOME_UNKNOWN";
 

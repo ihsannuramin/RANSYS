@@ -447,14 +447,27 @@ public sealed class Transaction
     }
 
     /// <summary>
-    /// ADR-027 (revised, U1): merges a new provider result into the accepted-evidence projection instead of blindly
-    /// overwriting it, for a duplicate/late report of a status that is <em>already</em> accepted
+    /// ADR-027 (revised, U1/V1): merges a new provider result into the accepted-evidence projection instead of
+    /// blindly overwriting it, for a duplicate/late report of a status that is <em>already</em> accepted
     /// (<see cref="TransitionKind.NoChange"/>) — never for a genuinely new transition, see
-    /// <see cref="RecordLatestProviderResult"/>. Same identity (or no identity yet on either side) enriches — fills
-    /// in blanks and prefers non-empty <see cref="AttemptOutcome.Data"/> over empty — but a genuinely different
-    /// provider reference/STAN/RRN is never silently swapped in; the caller can observe the conflict through the
-    /// returned <see cref="ProviderResultMergeOutcome"/> instead of it being applied unnoticed. Does not touch
-    /// processing/financial/reconciliation/settlement status and produces no <see cref="StateChange"/>.
+    /// <see cref="RecordLatestProviderResult"/>. <see cref="AttemptOutcome.ProviderReference"/>,
+    /// <see cref="AttemptOutcome.ProviderStan"/> and <see cref="AttemptOutcome.ProviderRrn"/> are three distinct
+    /// identity fields, never collapsed into one via <c>??</c>: each is compared independently against its own
+    /// existing value, per <see cref="MergeIdentityField"/>'s decision table (applied to each field on its own):
+    /// <list type="bullet">
+    /// <item>existing null, incoming null → stays null;</item>
+    /// <item>existing null, incoming non-null → enriches (the incoming value is taken);</item>
+    /// <item>existing non-null, incoming null → keeps the existing value (a blank incoming field never erases it);</item>
+    /// <item>existing non-null, incoming non-null and equal → keeps it (no-op);</item>
+    /// <item>existing non-null, incoming non-null and different → conflict on that field.</item>
+    /// </list>
+    /// A conflict on <em>any</em> one of the three fields makes the whole report <see cref="ProviderResultMergeOutcome.ConflictingIdentity"/>
+    /// and changes nothing; there is no cross-field fallback (a shared RRN does not excuse a different STAN, and vice
+    /// versa). Otherwise the fields merge and non-identity fields fill in blanks the same way as before; non-empty
+    /// <see cref="AttemptOutcome.Data"/> replaces the existing payload as a whole (a snapshot, not a key-by-key
+    /// patch — see the inline comment below) rather than being spliced key-by-key. The caller can observe a conflict
+    /// through the returned <see cref="ProviderResultMergeOutcome"/> instead of it being silently applied or dropped.
+    /// Does not touch processing/financial/reconciliation/settlement status and produces no <see cref="StateChange"/>.
     /// </summary>
     public ProviderResultMergeOutcome MergeLatestProviderResult(AttemptOutcome incoming, ChangeSource source, DateTimeOffset recordedAt)
     {
@@ -467,14 +480,17 @@ public sealed class Transaction
             return ProviderResultMergeOutcome.Recorded;
         }
 
-        var incomingIdentity = incoming.ProviderReference ?? incoming.ProviderStan ?? incoming.ProviderRrn;
-        if (incomingIdentity is null)
+        if (incoming.ProviderReference is null && incoming.ProviderStan is null && incoming.ProviderRrn is null
+            && incoming.Data is not { Count: > 0 })
         {
             return ProviderResultMergeOutcome.IgnoredNoIdentity;
         }
 
-        var existingIdentity = existing.ProviderReference ?? existing.ProviderStan ?? existing.ProviderRrn;
-        if (existingIdentity is not null && incomingIdentity != existingIdentity)
+        var (reference, referenceConflict) = MergeIdentityField(existing.ProviderReference, incoming.ProviderReference);
+        var (stan, stanConflict) = MergeIdentityField(existing.ProviderStan, incoming.ProviderStan);
+        var (rrn, rrnConflict) = MergeIdentityField(existing.ProviderRrn, incoming.ProviderRrn);
+
+        if (referenceConflict || stanConflict || rrnConflict)
         {
             return ProviderResultMergeOutcome.ConflictingIdentity;
         }
@@ -486,24 +502,59 @@ public sealed class Transaction
             ransysResponseCode: incoming.RansysResponseCode ?? existing.RansysResponseCode,
             providerResponseCode: incoming.ProviderResponseCode ?? existing.ProviderResponseCode,
             providerResponseMessage: incoming.ProviderResponseMessage ?? existing.ProviderResponseMessage,
-            providerReference: incoming.ProviderReference ?? existing.ProviderReference,
-            providerStan: incoming.ProviderStan ?? existing.ProviderStan,
-            providerRrn: incoming.ProviderRrn ?? existing.ProviderRrn,
+            providerReference: reference,
+            providerStan: stan,
+            providerRrn: rrn,
             latency: incoming.Latency ?? existing.Latency,
             rawMessages: incoming.RawMessages != RawMessageReferences.None ? incoming.RawMessages : existing.RawMessages,
             providerSentAt: incoming.ProviderSentAt ?? existing.ProviderSentAt,
             providerResponseAt: incoming.ProviderResponseAt ?? existing.ProviderResponseAt,
             metadata: incoming.Metadata,
+            // Snapshot semantics, chosen explicitly (not a key-by-key patch): a fresher non-empty report replaces the
+            // whole payload, since splicing keys from two different reports' snapshots could silently mix incompatible data.
             data: incoming.Data is { Count: > 0 } ? incoming.Data : existing.Data);
 
         if (merged.IsFailure)
         {
-            return ProviderResultMergeOutcome.IgnoredNoIdentity;
+            // Every field came from an already-validated AttemptOutcome, so this should be unreachable. If it somehow
+            // isn't, treat it as needing attention (observable via V2's conflict path) rather than silently discarding it.
+            return ProviderResultMergeOutcome.ConflictingIdentity;
         }
 
         LatestProviderResult = new TransactionResultProjection(merged.Value, source, recordedAt);
         return ProviderResultMergeOutcome.Enriched;
     }
+
+    /// <summary>
+    /// Per-field identity merge rule used by <see cref="MergeLatestProviderResult"/> (V1): a blank incoming value
+    /// never erases an existing one; a non-null incoming value fills a blank existing one; equal non-null values are
+    /// a no-op; different non-null values are a conflict on that field alone.
+    /// </summary>
+    private static (string? Value, bool Conflict) MergeIdentityField(string? existing, string? incoming)
+    {
+        if (incoming is null)
+        {
+            return (existing, false);
+        }
+
+        if (existing is null || existing == incoming)
+        {
+            return (incoming, false);
+        }
+
+        return (existing, true);
+    }
+
+    /// <summary>
+    /// V2 (ADR-027 revised): a provider result whose reference/STAN/RRN conflicts with the already-accepted evidence
+    /// must never be silently dropped. Reuses the same reconciliation-exception mechanism a status-level conflict
+    /// already uses (idempotent when already EXCEPTION) instead of a separate conflict log.
+    /// </summary>
+    public Result<TransitionOutcome> RecordProviderEvidenceConflict(TransitionContext context) =>
+        RecordReconciliationException(
+            ReasonCodes.ConflictingProviderEvidence,
+            "A provider result's reference/STAN/RRN conflicts with the already-accepted evidence.",
+            context);
 
     /// <summary>
     /// Decides whether a new provider attempt may be created (ADR-005, ADR-012, ADR-019, State Transition Matrix §15, §64–66):

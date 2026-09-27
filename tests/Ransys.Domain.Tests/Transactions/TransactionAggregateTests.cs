@@ -475,6 +475,94 @@ public sealed class TransactionAggregateTests
         Assert.Equal("PRV-A", t.LatestProviderResult!.Evidence.ProviderReference);
     }
 
+    // ---------------------------------------------------------------- V1: per-field identity comparison
+
+    /// <summary>
+    /// V1-1: existing has all three identity fields set; incoming shares the SAME reference but a DIFFERENT STAN and
+    /// RRN. The old collapsed-identity comparison (<c>ProviderReference ?? ProviderStan ?? ProviderRrn</c>) matched on
+    /// the shared reference and then blindly overwrote STAN/RRN. Per-field comparison must catch the STAN/RRN
+    /// mismatch and leave the whole projection untouched.
+    /// </summary>
+    [Fact]
+    public void MergeLatestProviderResult_conflicting_stan_and_rrn_behind_a_shared_reference_is_a_conflict()
+    {
+        var t = NewPayment();
+        var existing = AttemptOutcome.Create(true, TransportStatus.Response, providerReference: "P", providerStan: "S1", providerRrn: "R1").Value;
+        var incoming = AttemptOutcome.Create(true, TransportStatus.Response, providerReference: "P", providerStan: "S2", providerRrn: "R2").Value;
+
+        Assert.Equal(ProviderResultMergeOutcome.Recorded, t.MergeLatestProviderResult(existing, ChangeSource.Callback, T0));
+        var outcome = t.MergeLatestProviderResult(incoming, ChangeSource.Callback, T0);
+
+        Assert.Equal(ProviderResultMergeOutcome.ConflictingIdentity, outcome);
+        Assert.Equal(
+            ("P", "S1", "R1"),
+            (t.LatestProviderResult!.Evidence.ProviderReference, t.LatestProviderResult.Evidence.ProviderStan, t.LatestProviderResult.Evidence.ProviderRrn));
+    }
+
+    /// <summary>
+    /// V1-2: existing has no reference yet, only a shared RRN; incoming adds a reference under that same RRN. The old
+    /// collapsed comparison treated this as a reference-vs-RRN mismatch (a false conflict); per-field comparison must
+    /// recognize this as a valid enrichment (reference goes from null to P, RRN matches on its own field).
+    /// </summary>
+    [Fact]
+    public void MergeLatestProviderResult_adding_a_reference_under_a_matching_rrn_enriches_not_conflicts()
+    {
+        var t = NewPayment();
+        var existing = AttemptOutcome.Create(true, TransportStatus.Response, providerRrn: "R1").Value;
+        var incoming = AttemptOutcome.Create(true, TransportStatus.Response, providerReference: "P", providerRrn: "R1").Value;
+
+        Assert.Equal(ProviderResultMergeOutcome.Recorded, t.MergeLatestProviderResult(existing, ChangeSource.Callback, T0));
+        var outcome = t.MergeLatestProviderResult(incoming, ChangeSource.Callback, T0);
+
+        Assert.Equal(ProviderResultMergeOutcome.Enriched, outcome);
+        Assert.Equal(
+            ("P", "R1"), (t.LatestProviderResult!.Evidence.ProviderReference, t.LatestProviderResult.Evidence.ProviderRrn));
+    }
+
+    /// <summary>
+    /// V1-3: existing has a reference and RRN; incoming repeats the same RRN but leaves the reference blank. A blank
+    /// incoming field must never be treated as a conflict against a known existing value (that is what "existing
+    /// non-null, incoming null → keep existing" means) — it also must not be misread as a reference-vs-RRN mismatch.
+    /// </summary>
+    [Fact]
+    public void MergeLatestProviderResult_partial_duplicate_with_blank_reference_field_is_not_a_conflict()
+    {
+        var t = NewPayment();
+        var existing = AttemptOutcome.Create(true, TransportStatus.Response, providerReference: "P", providerRrn: "R1").Value;
+        var incoming = AttemptOutcome.Create(true, TransportStatus.Response, providerRrn: "R1").Value;
+
+        Assert.Equal(ProviderResultMergeOutcome.Recorded, t.MergeLatestProviderResult(existing, ChangeSource.Callback, T0));
+        var outcome = t.MergeLatestProviderResult(incoming, ChangeSource.Callback, T0);
+
+        Assert.NotEqual(ProviderResultMergeOutcome.ConflictingIdentity, outcome);
+        Assert.Equal("P", t.LatestProviderResult!.Evidence.ProviderReference);
+    }
+
+    /// <summary>
+    /// V1-4: Data merge is a whole-payload snapshot, never a key-by-key splice. A later non-empty report with FEWER
+    /// keys than the existing payload must fully replace it, not merge business keys from two different reports.
+    /// </summary>
+    [Fact]
+    public void MergeLatestProviderResult_data_merge_is_a_snapshot_not_a_key_by_key_splice()
+    {
+        var t = NewPayment();
+        var existingData = ImmutableDictionary<string, JsonElement>.Empty
+            .Add("a", JsonSerializer.SerializeToElement("1"))
+            .Add("b", JsonSerializer.SerializeToElement("2"));
+        var incomingData = ImmutableDictionary<string, JsonElement>.Empty.Add("a", JsonSerializer.SerializeToElement("3"));
+        var existing = AttemptOutcome.Create(true, TransportStatus.Response, providerReference: "P", data: existingData).Value;
+        var incoming = AttemptOutcome.Create(true, TransportStatus.Response, providerReference: "P", data: incomingData).Value;
+
+        Assert.Equal(ProviderResultMergeOutcome.Recorded, t.MergeLatestProviderResult(existing, ChangeSource.Callback, T0));
+        var outcome = t.MergeLatestProviderResult(incoming, ChangeSource.Callback, T0);
+
+        Assert.Equal(ProviderResultMergeOutcome.Enriched, outcome);
+        var data = t.LatestProviderResult!.Evidence.Data;
+        Assert.Equal("3", FieldOf(data, "a"));
+        Assert.Null(FieldOf(data, "b"));
+        Assert.Single(data!);
+    }
+
     private static IReadOnlyDictionary<string, JsonElement> DataOf(string field, string value) =>
         ImmutableDictionary<string, JsonElement>.Empty.Add(field, JsonSerializer.SerializeToElement(value));
 

@@ -45,16 +45,22 @@ public sealed record OriginalProviderReferences(string? ProviderReference, strin
     }
 
     /// <summary>
-    /// ADR-027: prefers the original transaction's latest-provider-result projection (a later/final async report,
-    /// e.g. a callback that arrived after the attempt outcome that first resolved the original was already
-    /// immutable) over the per-attempt scan, which only sees the outcome recorded at the time.
+    /// ADR-027 (V3 fix): prefers the original transaction's latest-provider-result projection (a later/final async
+    /// report, e.g. a callback that arrived after the attempt outcome that first resolved the original was already
+    /// immutable) over the per-attempt scan, which only sees the outcome recorded at the time. Shares the exact same
+    /// "projection exists → trust it, even when its own reference/STAN/RRN are all null" rule as GET
+    /// (<c>PostgresTransactionQuery</c>) and replay (<c>TransactionProcessingService.Build</c>): a final accepted
+    /// report with no reference is not the same thing as no report at all, so it must not fall back to an older,
+    /// possibly superseded provisional reference from <paramref name="originalAttempts"/> (e.g. a PENDING callback's
+    /// temporary reference on an attempt outcome that a later, reference-less final SUCCESS/FAILED superseded). The
+    /// attempt scan is used only when there is genuinely no projection yet (a legacy transaction that only ever went
+    /// through the sync path, before ADR-027 existed).
     /// </summary>
     public static OriginalProviderReferences From(Transaction original, IEnumerable<TransactionAttempt> originalAttempts)
     {
         ArgumentNullException.ThrowIfNull(original);
 
-        if (original.LatestProviderResult?.Evidence is { } evidence
-            && (evidence.ProviderReference ?? evidence.ProviderStan ?? evidence.ProviderRrn) is not null)
+        if (original.LatestProviderResult?.Evidence is { } evidence)
         {
             return new(evidence.ProviderReference, evidence.ProviderStan, evidence.ProviderRrn);
         }

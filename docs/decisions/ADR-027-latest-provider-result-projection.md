@@ -155,23 +155,53 @@ all", and fell through to stale attempt-outcome data a later, final, empty-data 
 The fix: `RecordLatestProviderResult` is replaced by `Transaction.MergeLatestProviderResult(incoming, source,
 recordedAt) : ProviderResultMergeOutcome`:
 - No projection yet ⇒ `Recorded`: the incoming evidence becomes the projection outright.
-- A projection exists and the incoming report carries a provider identity (`ProviderReference ?? ProviderStan ??
-  ProviderRrn`) that matches the existing one, **or** the existing projection has no identity yet ⇒ `Enriched`: the
-  merge fills in fields the existing projection has as null from the incoming report, and prefers non-empty `Data`
-  over empty `Data` (never the reverse) — it never blanks out a field the existing projection already had a value
-  for.
-- The incoming report carries no provider identity at all (nothing to merge or compare by) ⇒ `IgnoredNoIdentity`:
-  nothing changes; a duplicate/late report with no concrete reference can never erase or dilute an already-known one.
-- The incoming report's identity differs from the existing projection's ⇒ `ConflictingIdentity`: nothing changes.
-  This is a genuinely different provider reference/STAN/RRN reported for the same transaction — never silently
-  swapped in. The conflict is observable through the returned `ProviderResultMergeOutcome` (callers may log/alert on
-  it); it is not separately persisted as its own row in this change.
+- The incoming report carries no provider identity at all — `ProviderReference`, `ProviderStan` and `ProviderRrn` all
+  null, and no non-empty `Data` either — ⇒ `IgnoredNoIdentity`: nothing changes; a duplicate/late report with nothing
+  concrete can never erase or dilute an already-known projection.
+- Otherwise, `ProviderReference`, `ProviderStan` and `ProviderRrn` are merged **independently, field by field**
+  (`MergeIdentityField`, a per-field decision table — never the earlier collapsed
+  `ProviderReference ?? ProviderStan ?? ProviderRrn` single-string comparison, which mixed three semantically distinct
+  identifiers and both let genuine conflicts through and rejected valid enrichments, see the "Per-field identity
+  comparison (V1)" section below):
+  - existing null, incoming null → stays null;
+  - existing null, incoming non-null → enriches (the incoming value is taken);
+  - existing non-null, incoming null → keeps the existing value (a blank incoming field never erases it);
+  - existing non-null, incoming non-null and equal → keeps it (no-op);
+  - existing non-null, incoming non-null and different → a conflict on that field alone.
+  A conflict on *any one* of the three fields makes the whole report `ConflictingIdentity` and changes nothing (no
+  cross-field fallback: a shared RRN never excuses a different STAN). Otherwise the merge proceeds: non-identity
+  fields fill in blanks the same way as before, and non-empty `Data` replaces the existing payload as a whole (a
+  snapshot, never a key-by-key splice — two reports' business payloads are never spliced together, since that could
+  silently mix incompatible data) ⇒ `Enriched`.
+- `ConflictingIdentity`: nothing on the projection changes. This is a genuinely different provider reference/STAN/RRN
+  reported for the same transaction — never silently swapped in.
 
-`TransactionFinalizationService.ApplyAsync` calls `MergeLatestProviderResult` at both points that used to call
-`RecordLatestProviderResult` (the `NoChange` branch and the post-ledger `Applied` branch; `ConflictRecorded` still
-never calls it at all, unchanged from RR3). In the `NoChange` branch, the transaction row is only re-persisted when
-the merge outcome is `Recorded` or `Enriched` — `IgnoredNoIdentity`/`ConflictingIdentity` mean nothing changed, so
-there is nothing to write.
+### Per-field identity comparison (V1) and a durable conflict record (V2)
+A further external re-review (`review/RANSYS_Review_Progress_2ff8477.md`, V1–V3) found two problems with the U1/U2
+merge above as first implemented:
+- **V1:** the identity comparison itself still collapsed `ProviderReference`, `ProviderStan` and `ProviderRrn` into one
+  string via `??` before comparing. This both let a genuine conflict through (same reference, but a different STAN/RRN
+  silently overwrote the existing ones once the collapsed strings happened to match) and rejected valid enrichment
+  (existing `RRN` only, incoming adds a `ProviderReference` under the same `RRN` — the collapsed strings differ,
+  falsely flagged as conflicting). The fix above (`MergeIdentityField` applied per field) is what closed this.
+- **V2:** `ConflictingIdentity` used to be handled nowhere: `TransactionFinalizationService.ApplyAsync`'s `NoChange`
+  branch checked only for `Recorded`/`Enriched` and otherwise fell through unchanged, so the conflict was detected but
+  never observable — no persistence, no history row, no outbox event; `ProviderCallbackSink` acked it as a plain
+  `DUPLICATE`, indistinguishable from a harmless repeat. The fix: `ConflictingIdentity` now calls
+  `Transaction.RecordProviderEvidenceConflict`, which reuses the same reconciliation-exception mechanism a
+  status-level contradiction already uses (`ReasonCodes.ConflictingProviderEvidence`, distinct from the status-level
+  `ConflictingProviderResult`; idempotent once `ReconciliationStatus` is already `Exception`). This produces a real,
+  durable `TransactionEventTypes.ReconExceptionCreated` outbox event, and the sink acks it with the same
+  `ProviderCallbackSink.ConflictRecorded` code a status-level conflict already gets — never `Duplicate`.
+
+`TransactionFinalizationService.ApplyAsync` calls `MergeLatestProviderResult` only in the `NoChange` branch (a
+duplicate/late report of a status that is *already* accepted); the post-ledger `Applied` branch still calls
+`RecordLatestProviderResult` unconditionally (a genuinely new transition's evidence always replaces the projection
+outright, per the "Applied always replaces" rule above) — `ConflictRecorded` (the status-level kind, from
+`CompleteSuccess`/`CompleteFailure`'s own contradiction branches) still never touches the projection at all, unchanged
+from RR3. In the `NoChange` branch, the transaction row is re-persisted for `Recorded`/`Enriched` (the merge changed
+the projection) and also for `ConflictingIdentity` (the reconciliation-exception write), but not for
+`IgnoredNoIdentity` (truly nothing changed).
 
 Readers that used to prefer "the projection if any of its fields is non-null, else the fallback" now prefer "the
 projection if it exists at all (regardless of which of its own fields are null), else the fallback":
@@ -179,9 +209,15 @@ projection if it exists at all (regardless of which of its own fields are null),
 not does it fall back to the attempt outcome / caller-supplied fallback data. `PostgresTransactionQuery`'s GET query
 changes from `COALESCE(t.latest_result_provider_stan, a.provider_stan)` to a `CASE WHEN t.latest_result_recorded_at
 IS NOT NULL THEN t.latest_result_provider_stan ELSE a.provider_stan END` — trusting an existing accepted
-projection's own (possibly null) value instead of silently falling back to the older attempt-join value. This is the
-same class of fix U2 asked for, applied uniformly to every reader, not only the replay path.
-`ProviderRequestFactory.OriginalProviderReferences.From(original, originalAttempts)` is intentionally left as-is: it
-already only falls back to the attempt scan when the accepted evidence has *no reference at all*, which suits its
-purpose (a child request just needs some reference to proceed) and is not the "empty is the same as absent" bug this
-follow-up fixes elsewhere.
+projection's own (possibly null) value instead of silently falling back to the older attempt-join value.
+`ProviderRequestFactory.OriginalProviderReferences.From(original, originalAttempts)` (V3, corrected) now shares this
+*exact same* rule, not an intentionally different one: it falls back to the attempt scan only when the original has
+**no projection at all** (a legacy transaction from before ADR-027, or one whose evidence was genuinely never
+captured), never merely because the existing projection's own reference/STAN/RRN happen to all be null. An earlier
+version of this fix left the child reader on its old "falls back whenever the projection has no reference at all"
+rule, reasoning that "a child request just needs some reference to proceed" — that reasoning was itself the bug: it
+let a superseded PENDING callback's provisional reference (already immutable on `transaction_attempts`, ADR-005) leak
+into a refund/reversal/void child's outgoing provider request even after a later, final, reference-less report was
+correctly accepted as the transaction's real outcome. Out of scope, not implemented here: failing closed (or otherwise
+deferring the operation) when a provider genuinely needs a reference to address the original and none has been
+accepted yet is its own product decision and needs its own ADR.
