@@ -2,6 +2,8 @@
 
 **Status:** Proposed — product owner decision (Milestone 12 plan), implemented in Milestone 12e (`src/Ransys.Api/Security`). The RANSYS signed HTTP message profile remains **TODO / Architecture Decision Required**.
 
+**Implementation status:** the interim policy itself (fail closed by default, Development/Test-only authenticator, environment guard, in-memory replay protection) is fully implemented and tested (`tests/Ransys.Api.Tests/SecurityTests.cs`). Production request authentication is deliberately **not** implemented — `FailClosedRequestAuthenticationService`/`FailClosedSignatureVerifier` reject all merchant traffic in every environment other than the gated Development/Test path. This is the intended fail-closed behavior, not a regression; it stays this way until the signature profile, key/certificate registry, mTLS binding, and a restart-durable shared replay store (listed below) are decided and built.
+
 ## Context
 OpenAPI v1 §3 requires mTLS plus a "RANSYS signed HTTP message profile" with the headers `X-Ransys-Client-Id`, `X-Ransys-Timestamp`, `X-Ransys-Nonce`, `Content-Digest`, `Signature-Input`, `Signature` (the GET operation omits `Content-Digest`). No document specifies the profile: covered components, algorithms, key identifiers, the client key store, the clock-skew window, nonce retention, or how a client identity maps to a channel.
 

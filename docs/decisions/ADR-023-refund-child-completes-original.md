@@ -1,6 +1,6 @@
 # ADR-023 — A Refund Child Completes the Original Directly
 
-**Status:** Proposed — implemented in the domain (Milestone 12a); the refund use case that calls it follows in Milestone 12d.
+**Status:** Proposed — implemented end to end: the domain (Milestone 12a), the refund use case (`ChildTransactionService`, `TransactionFinalizationService.ApplyRefundToOriginalAsync`, Milestone 12d), and the merchant API refund endpoint (Milestone 12e) all call this path. Decision status is unchanged pending product-owner acceptance; implementation completeness and decision acceptance are tracked separately.
 
 ## Context
 State Transition Matrix PS-11..PS-13 describe refunds on the original: SUCCESS → REFUND_PENDING → PARTIALLY_REFUNDED / REFUNDED (financial POSTED → REFUND_PENDING → …). ADR-012 made reversals child transactions that never overwrite the original while they run. Refunds are also child transactions (`original_transaction_id`, State Transition Matrix §19).

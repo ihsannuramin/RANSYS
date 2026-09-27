@@ -1,6 +1,6 @@
 # ADR-024 — Refund Authorization: Merchant API Refund vs Manual Refund
 
-**Status:** Proposed — implemented in Milestone 12c (`Ransys.Ledger.RefundAuthorization`).
+**Status:** Proposed — implemented in Milestone 12c (`Ransys.Ledger.RefundAuthorization`). This is the ledger-contract/authorization-shape decision only; it is not a claim that the Backoffice maker-checker workflow itself is implemented (see the trust boundary below).
 
 ## Context
 ADR-023 makes a refund a child transaction that a merchant starts through `POST /api/v1/refunds`. When the provider confirms the child, Transaction Core posts the refund (`PostRefundAsync`, key `TX:<original>:REFUND:<child>`). Until now `RefundRequest` required a non-empty `ApprovalRequestId`, because the Ledger Posting Service only knew manual (Backoffice) refunds.
@@ -30,3 +30,7 @@ Only `TransactionFinalizationService` creates `MerchantApiRequest`, and only aft
 - A merchant API refund is traceable through its child transaction rather than an approval request.
 - Refund limits are unchanged: `REFUND_EXCEEDS_POSTED` in the ledger, plus the child-level cap (sum of non-failed refund children ≤ original principal) checked when the child is created.
 - Backoffice manual refunds (later milestone) must use `ApprovedRequest`.
+
+## Trust boundary (important before opening the manual Backoffice path)
+- At the ledger, `ApprovedRequest` only checks that `ApprovalRequestId` is a non-empty GUID. It does **not** prove the approval was actually stored, is in an APPROVED state, or that its maker differs from its checker — that validation does not exist yet anywhere in this codebase. Do not read this ADR's "implemented" status as a maker-checker workflow being enforced.
+- The ledger also does not independently verify merchant/channel ownership against the database for either authorization form; it trusts the caller (Transaction Core) to have already authenticated the request. A production manual-refund endpoint must validate a real, stored, approved request (with maker ≠ checker) before calling `PostRefundAsync` with `ApprovedRequest`, and the merchant API path depends on ADR-022's production authentication being completed first.

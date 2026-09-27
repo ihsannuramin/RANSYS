@@ -88,6 +88,7 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 | 15 Architecture review remediation, round 3 (`review/RANSYS_Architecture_Review_b9616fb.md`, T1-T4) | Implemented — see below |
 | 16 Architecture review remediation, round 4 (`review/RANSYS_Review_Progress_7dbaf4b.md`, U1-U2) | Implemented — see below |
 | 17 Architecture review remediation, round 5 (`review/RANSYS_Review_Progress_2ff8477.md`, V1-V3) | Implemented — see below |
+| 18 ADR status reconciliation (`review/RANSYS_Review_ADR_Status_7e6d23f.md`, PASS WITH FOLLOW-UPS) | Done — docs only, see below |
 
 ## Phase 1 Definition of Done (main.md §28)
 
@@ -196,6 +197,13 @@ The review's progress estimate is unchanged from the previous round (≈40% PRD,
 Final verification for round 5: `dotnet build Ransys.sln` — 0 warnings, 0 errors; `dotnet test Ransys.sln` against real PostgreSQL — **1,471 passed, 0 failed, 0 skipped** across all 8 test projects, at commit `72e52bd`. All 7 new tests (4 domain-level unit tests directly on `MergeLatestProviderResult`, 3 integration tests including a real child provider request inspected through a scripted adapter) were confirmed to fail against the pre-fix code with exactly the wrong values/acks the review described, and pass after.
 
 As of this commit, `main` is one commit (`72e52bd`) ahead of `origin/main` (`2ff8477`) — not yet pushed, pending the reviewer's own re-verification; this documentation reflects implementer completion, not a reviewer sign-off, and this push status is only accurate as of this commit (check `git log`/`git status` for the current state, since it will go stale as work continues).
+
+A follow-up review (`review/RANSYS_Review_ADR_Status_7e6d23f.md`, HEAD `7e6d23f`) returned **PASS WITH FOLLOW-UPS** (a static check, not a runtime re-verification) confirming V1/V2/V3 are addressed with adequate regression coverage, and no new code blocker. It asked for three documentation-only reconciliations, applied directly (no code change, no new ADR):
+- ADR-023's status line said its use case "follows in Milestone 12d" — stale, since `ChildTransactionService`/`TransactionFinalizationService.ApplyRefundToOriginalAsync` and the merchant refund endpoint are already integrated. Updated to describe the actual end-to-end state.
+- ADR-022 gained an explicit "Implementation status" note distinguishing the fully-implemented interim fail-closed policy from production authentication, which is deliberately not implemented yet.
+- ADR-024 gained a "Trust boundary" section stating plainly that `ApprovedRequest` only checks for a non-empty GUID (it does not prove a stored, approved, maker≠checker request), and that the ledger trusts Transaction Core for merchant/channel ownership rather than re-validating it — a manual Backoffice endpoint must add that validation before it can call `PostRefundAsync`.
+
+All three ADRs remain **Proposed** — implementation completeness and product-owner acceptance are tracked separately, per this review's explicit instruction not to change decision status unilaterally. The PRD-scope estimate (≈40% overall, ≈85% core+API) is unchanged from the last two rounds.
 
 ## Architecture decisions
 
