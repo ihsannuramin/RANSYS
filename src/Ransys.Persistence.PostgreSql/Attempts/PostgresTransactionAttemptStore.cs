@@ -74,6 +74,7 @@ public sealed class PostgresTransactionAttemptStore : ITransactionAttemptStore
                 provider_sent_at = @ProviderSentAt,
                 provider_response_at = @ProviderResponseAt,
                 metadata = CAST(@Metadata AS jsonb),
+                response_data = CAST(@ResponseData AS jsonb),
                 outcome_recorded_at = @RecordedAt
             WHERE transaction_attempt_id = @Id AND outcome_recorded_at IS NULL
             """,
@@ -95,6 +96,7 @@ public sealed class PostgresTransactionAttemptStore : ITransactionAttemptStore
                 ProviderSentAt = DbValues.ToDb(outcome.ProviderSentAt),
                 ProviderResponseAt = DbValues.ToDb(outcome.ProviderResponseAt),
                 Metadata = DbValues.MetadataToJson(outcome.Metadata),
+                ResponseData = DbValues.ResponseDataToJson(outcome.Data),
                 RecordedAt = DbValues.ToDb(recordedAt),
             },
             s.Transaction, cancellationToken: cancellationToken));
@@ -113,7 +115,7 @@ public sealed class PostgresTransactionAttemptStore : ITransactionAttemptStore
                    a.provider_response_message, a.provider_reference, a.provider_stan, a.provider_rrn, a.latency_ms,
                    a.raw_request_reference, a.raw_response_reference, a.correlation_id, a.trace_id,
                    a.provider_sent_at, a.provider_response_at, a.created_at, a.metadata::text AS metadata,
-                   a.outcome_recorded_at
+                   a.response_data::text AS response_data, a.outcome_recorded_at
             FROM core.transaction_attempts a
             JOIN integration.providers p ON p.provider_id = a.provider_id
             WHERE a.ransys_transaction_id = @Id
@@ -212,7 +214,8 @@ public sealed class PostgresTransactionAttemptStore : ITransactionAttemptStore
             raw.Value,
             DbValues.FromDb(row.ProviderSentAt),
             DbValues.FromDb(row.ProviderResponseAt),
-            metadata.Value);
+            metadata.Value,
+            DbValues.ResponseDataFromJson(row.ResponseData));
     }
 
     private sealed class AttemptRow
@@ -266,6 +269,8 @@ public sealed class PostgresTransactionAttemptStore : ITransactionAttemptStore
         public DateTime CreatedAt { get; init; }
 
         public string Metadata { get; init; } = "{}";
+
+        public string? ResponseData { get; init; }
 
         public DateTime? OutcomeRecordedAt { get; init; }
     }

@@ -302,6 +302,29 @@ public sealed class TransactionProcessingTests(PostgresDatabaseFixture db)
         Assert.Equal((1_000_000m, 1_000_000m, 0m), await _h.Balances(s.Wallet));
     }
 
+    // R4 (Architecture Review) / ADR-026: a replay of an already-completed transaction must still return the
+    // business response data of its latest resolved attempt (e.g. an inquiry's billAmount), not an empty object.
+    [Fact]
+    public async Task Replay_of_a_completed_inquiry_still_returns_the_same_response_data()
+    {
+        var s = await _h.NewScenario();
+        var data = ImmutableDictionary<string, JsonElement>.Empty.Add("billAmount", JsonSerializer.SerializeToElement("125000.00"));
+        s.Adapter.ThenResult(r => ScriptedProviderAdapter.Success(r, data: data));
+        var command = new InquiryCommand(
+            s.Channel, s.Merchant, Reference(), null, s.ProductCode, new CustomerInput(CustomerId: "CUST-1"),
+            new EndpointInput(EndpointType.Biller, "PLN-123"), DateTimeOffset.UtcNow);
+
+        var first = Ok(await _h.Service.InquireAsync(command));
+        var retry = Ok(await _h.Service.InquireAsync(command with { RequestTimestamp = DateTimeOffset.UtcNow.AddSeconds(5) }));
+
+        Assert.Equal(first.TransactionId, retry.TransactionId);
+        Assert.True(retry.IsReplay);
+        Assert.Equal((ProcessingStatus.Success, "0000"), (retry.ProcessingStatus, retry.ResponseCode));
+        Assert.Equal("125000.00", first.Data["billAmount"].GetString());
+        Assert.Equal("125000.00", retry.Data["billAmount"].GetString());
+        Assert.Equal(1, s.Adapter.CallCount);
+    }
+
     [Fact]
     public async Task Transfer_calls_transfer_and_posts()
     {

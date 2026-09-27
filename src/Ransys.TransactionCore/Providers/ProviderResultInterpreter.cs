@@ -88,7 +88,8 @@ public static class ProviderResultInterpreter
             rawMessages: RawReferences(normalized, overflow),
             providerSentAt: null,
             providerResponseAt: domainTransport == DomainTransport.Response ? normalized.ReceivedAt : null,
-            metadata: OverflowMetadata(overflow));
+            metadata: OverflowMetadata(overflow),
+            data: normalized.Data.Count > 0 ? normalized.Data : null);
 
         if (outcome.IsFailure)
         {

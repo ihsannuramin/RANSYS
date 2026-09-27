@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Ransys.Domain.Common;
 
 namespace Ransys.Domain.Attempts;
@@ -36,7 +37,8 @@ public sealed record AttemptOutcome
         RawMessageReferences rawMessages,
         DateTimeOffset? providerSentAt,
         DateTimeOffset? providerResponseAt,
-        ExtensionMetadata metadata)
+        ExtensionMetadata metadata,
+        IReadOnlyDictionary<string, JsonElement>? data)
     {
         RequestSent = requestSent;
         TransportStatus = transportStatus;
@@ -52,6 +54,7 @@ public sealed record AttemptOutcome
         ProviderSentAt = providerSentAt;
         ProviderResponseAt = providerResponseAt;
         Metadata = metadata;
+        Data = data;
     }
 
     /// <summary>Financially significant (Canonical Data Model §44).</summary>
@@ -85,6 +88,14 @@ public sealed record AttemptOutcome
     public ExtensionMetadata Metadata { get; }
 
     /// <summary>
+    /// Business-facing provider response projection (ADR-026), e.g. an inquiry's <c>billAmount</c>. Distinct from
+    /// <see cref="Metadata"/>, which is for provider/product-specific extensions; this is data promoted to
+    /// common use that a replay of an already-completed transaction must still be able to return to the merchant.
+    /// Pass-through: not validated here.
+    /// </summary>
+    public IReadOnlyDictionary<string, JsonElement>? Data { get; }
+
+    /// <summary>
     /// True only when the adapter explicitly proved the financial request never left RANSYS.
     /// This is the sole condition under which pre-send failover may be considered (ADR-005).
     /// </summary>
@@ -105,7 +116,8 @@ public sealed record AttemptOutcome
         RawMessageReferences? rawMessages = null,
         DateTimeOffset? providerSentAt = null,
         DateTimeOffset? providerResponseAt = null,
-        ExtensionMetadata? metadata = null)
+        ExtensionMetadata? metadata = null,
+        IReadOnlyDictionary<string, JsonElement>? data = null)
     {
         if (!Enum.IsDefined(transportStatus))
         {
@@ -159,7 +171,8 @@ public sealed record AttemptOutcome
             rawMessages ?? RawMessageReferences.None,
             providerSentAt,
             providerResponseAt,
-            metadata ?? ExtensionMetadata.Empty);
+            metadata ?? ExtensionMetadata.Empty,
+            data);
     }
 
     private static RansysError? ValidateTransport(bool requestSent, TransportStatus status, DateTimeOffset? providerSentAt)

@@ -707,7 +707,9 @@ public sealed class TransactionProcessingService(
     {
         if (prepared.Attempt is null)
         {
-            return Build(prepared.Transaction, prepared.LatestOutcome, NoData, prepared.IsReplay);
+            // Replay (R4/ADR-026): the latest resolved attempt's business response data, not an empty object, so a
+            // merchant retry of an already-completed inquiry/payment still gets back the same data it was promised.
+            return Build(prepared.Transaction, prepared.LatestOutcome, prepared.LatestOutcome?.Data ?? NoData, prepared.IsReplay);
         }
 
         var transaction = prepared.Transaction;

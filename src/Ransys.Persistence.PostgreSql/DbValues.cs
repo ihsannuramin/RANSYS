@@ -45,4 +45,14 @@ internal static class DbValues
         string.IsNullOrWhiteSpace(json)
             ? ExtensionMetadata.Empty
             : ExtensionMetadata.Create(JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json, JsonOptions));
+
+    /// <summary>
+    /// Business-facing response data (ADR-026, <c>core.transaction_attempts.response_data</c>), a plain pass-through
+    /// dictionary distinct from <see cref="ExtensionMetadata"/>'s namespaced/validated keys.
+    /// </summary>
+    public static string? ResponseDataToJson(IReadOnlyDictionary<string, JsonElement>? data) =>
+        data is null or { Count: 0 } ? null : JsonSerializer.Serialize(data, JsonOptions);
+
+    public static IReadOnlyDictionary<string, JsonElement>? ResponseDataFromJson(string? json) =>
+        string.IsNullOrWhiteSpace(json) ? null : JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json, JsonOptions);
 }
