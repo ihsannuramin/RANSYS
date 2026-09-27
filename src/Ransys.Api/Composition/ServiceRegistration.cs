@@ -83,6 +83,10 @@ public static class ServiceRegistration
         services.AddSingleton<ChildTransactionService>();
         services.AddSingleton<TransactionFinalizationService>();
 
+        // ADR-005 crash recovery (R5): closes outcome-less attempts and moves the transaction IN_DOUBT. No hosted
+        // schedule wires this up yet (README TODO); this registration only makes it DI-resolvable.
+        services.AddSingleton<AttemptRecoveryService>();
+
         // Provider gateway. No real adapters exist yet: the in-process registry is empty in the API host, so a routed
         // provider without a binding is NOT_SENT (never sent, safe failover) and ends FAILED 5001 when none is left.
         // TODO: register gRPC adapter clients (GrpcProviderAdapterClient) per configured provider endpoint.

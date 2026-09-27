@@ -362,41 +362,8 @@ public sealed class TransactionFinalizationService
     }
 
     private Task EnqueueStatusEventAsync(
-        IDatabaseSession session, Transaction transaction, ProcessingStatus previous, TransitionOutcome outcome, ChangeSource source, CancellationToken cancellationToken)
-    {
-        var eventType = outcome.Kind == TransitionKind.ConflictRecorded
-            ? TransactionEventTypes.ReconExceptionCreated
-            : transaction.ProcessingStatus switch
-            {
-                ProcessingStatus.Success when previous == ProcessingStatus.InDoubt => TransactionEventTypes.ResolvedSuccess,
-                ProcessingStatus.Success => TransactionEventTypes.Succeeded,
-                ProcessingStatus.Failed when previous == ProcessingStatus.InDoubt => TransactionEventTypes.ResolvedFailed,
-                ProcessingStatus.Failed => TransactionEventTypes.Failed,
-                ProcessingStatus.Pending => TransactionEventTypes.Pending,
-                ProcessingStatus.Reversed => TransactionEventTypes.Reversed,
-                ProcessingStatus.PartiallyRefunded or ProcessingStatus.Refunded => TransactionEventTypes.Refunded,
-                _ => TransactionEventTypes.InDoubt,
-            };
-
-        var payload = new TransactionStatusChangedV1(
-            transaction.Id.Value,
-            transaction.Identity.ClientReference,
-            CanonicalCodes.ProcessingStatus.ToCode(transaction.ProcessingStatus),
-            CanonicalCodes.FinancialStatus.ToCode(transaction.FinancialStatus),
-            CanonicalCodes.ReconciliationStatus.ToCode(transaction.ReconciliationStatus),
-            CanonicalCodes.SettlementStatus.ToCode(transaction.SettlementStatus),
-            transaction.ResponseCode,
-            transaction.ReasonCode,
-            CanonicalCodes.ChangeSource.ToCode(source),
-            transaction.UpdatedAt);
-
-        return _outbox.EnqueueAsync(
-            session,
-            new OutboxMessage(
-                _ids.NewId(), TransactionEventTypes.AggregateType, transaction.Id.Value, eventType, TransactionStatusChangedV1.Version,
-                transaction.RowVersion, payload, _clock.UtcNow),
-            cancellationToken);
-    }
+        IDatabaseSession session, Transaction transaction, ProcessingStatus previous, TransitionOutcome outcome, ChangeSource source, CancellationToken cancellationToken) =>
+        _outbox.EnqueueAsync(session, TransactionStatusEvents.Build(transaction, previous, outcome, source, _ids, _clock), cancellationToken);
 
     private static FinalizationResult Snapshot(TransitionOutcome outcome, Transaction transaction) =>
         new(outcome.Kind, outcome.LedgerAction, transaction.ProcessingStatus, transaction.FinancialStatus, transaction.ReconciliationStatus);

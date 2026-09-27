@@ -41,7 +41,7 @@ internal sealed class CoreHarness
         AttemptStore = new PostgresTransactionAttemptStore();
         Ledger = new LedgerPostingService(new PostgresLedgerStore(new ReferenceDataStore()), new PostgresOutboxWriter(), clock, ids);
         Attempts = new TransactionAttemptService(AttemptStore, clock, ids);
-        Recovery = new AttemptRecoveryService(Transactions, AttemptStore, Attempts, Ledger, clock);
+        Recovery = new AttemptRecoveryService(Transactions, AttemptStore, Attempts, Ledger, new PostgresOutboxWriter(), clock, ids);
         Finalization = new TransactionFinalizationService(
             new PostgresSessionFactory(db.DataSource), Transactions, Ledger, new PostgresOutboxWriter(), clock, ids);
         Reversals = new ReversalService(

@@ -152,6 +152,51 @@ public sealed class TransactionAttemptTests(PostgresDatabaseFixture db)
         Assert.Equal(AttemptRecoveryOutcome.AlreadyResolved, (await _h.Recovery.RecoverAsync(again, tx, attempt.Id)).Value);
     }
 
+    /// <summary>
+    /// R5 (architecture review finding): recovery must emit the same TRANSACTION status event finalization emits for
+    /// every other path to IN_DOUBT, so Backoffice replication and downstream consumers see the recovered state too.
+    /// </summary>
+    [Fact]
+    public async Task Recovery_enqueues_the_in_doubt_status_event_exactly_once()
+    {
+        var (tx, _) = await _h.ProcessingPayment();
+        var attempt = await StartPayment(tx, _h.ProviderA);
+
+        await using (var session = await _h.Session())
+        {
+            var result = await _h.Recovery.RecoverAsync(session, tx, attempt.Id);
+            Assert.Equal(AttemptRecoveryOutcome.MarkedInDoubt, result.Value);
+            await session.CommitAsync();
+        }
+
+        var after = await _h.Load(tx);
+        Assert.Equal((ProcessingStatus.InDoubt, FinancialStatus.Reserved), (after.ProcessingStatus, after.FinancialStatus));
+        Assert.Equal("IN_DOUBT", await _h.Query<string>(
+            "SELECT hold_reason FROM ledger.balance_reservations WHERE ransys_transaction_id = @id", new { id = tx.Value }));
+
+        Assert.Equal(1, await EventCount(tx, "TRANSACTION_IN_DOUBT"));
+        var (sourceVersion, rowVersion) = await _h.Query<(long, long)>(
+            """
+            SELECT
+              (SELECT source_version FROM async.outbox_events WHERE aggregate_id = @id AND event_type = 'TRANSACTION_IN_DOUBT'),
+              (SELECT row_version FROM core.transactions WHERE ransys_transaction_id = @id)
+            """,
+            new { id = tx.Value });
+        Assert.Equal(rowVersion, sourceVersion);
+
+        // A second recovery of the very same (now resolved) attempt must not emit a duplicate event.
+        await using var again = await _h.Session();
+        Assert.Equal(AttemptRecoveryOutcome.AlreadyResolved, (await _h.Recovery.RecoverAsync(again, tx, attempt.Id)).Value);
+        await again.CommitAsync();
+
+        Assert.Equal(1, await EventCount(tx, "TRANSACTION_IN_DOUBT"));
+    }
+
+    private Task<int> EventCount(Domain.TransactionId tx, string eventType) =>
+        _h.Query<int>(
+            "SELECT count(*) FROM async.outbox_events WHERE aggregate_id = @id AND event_type = @eventType",
+            new { id = tx.Value, eventType });
+
     [Fact]
     public async Task Recovery_leaves_young_attempts_alone()
     {

@@ -6,6 +6,7 @@ using Ransys.Domain.Common;
 using Ransys.Domain.Ledger;
 using Ransys.Domain.Transactions;
 using Ransys.Ledger;
+using Ransys.TransactionCore.Finalization;
 
 namespace Ransys.TransactionCore.Attempts;
 
@@ -37,20 +38,26 @@ public sealed class AttemptRecoveryService
     private readonly ITransactionAttemptStore _attempts;
     private readonly TransactionAttemptService _attemptService;
     private readonly ILedgerPostingService _ledger;
+    private readonly IOutboxWriter _outbox;
     private readonly IClock _clock;
+    private readonly IIdGenerator _ids;
 
     public AttemptRecoveryService(
         ITransactionRepository transactions,
         ITransactionAttemptStore attempts,
         TransactionAttemptService attemptService,
         ILedgerPostingService ledger,
-        IClock clock)
+        IOutboxWriter outbox,
+        IClock clock,
+        IIdGenerator ids)
     {
         _transactions = transactions ?? throw new ArgumentNullException(nameof(transactions));
         _attempts = attempts ?? throw new ArgumentNullException(nameof(attempts));
         _attemptService = attemptService ?? throw new ArgumentNullException(nameof(attemptService));
         _ledger = ledger ?? throw new ArgumentNullException(nameof(ledger));
+        _outbox = outbox ?? throw new ArgumentNullException(nameof(outbox));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+        _ids = ids ?? throw new ArgumentNullException(nameof(ids));
     }
 
     /// <summary>
@@ -111,6 +118,7 @@ public sealed class AttemptRecoveryService
             return AttemptRecoveryOutcome.AttemptClosed;
         }
 
+        var previous = transaction.ProcessingStatus;
         var context = TransitionContext.Create(
             ReasonCodes.AttemptOutcomeUnknown, ChangeSource.SystemRecovery, _clock.UtcNow, attemptId: attempt.Id).Value;
         var inDoubt = transaction.MarkInDoubt(context);
@@ -130,6 +138,19 @@ public sealed class AttemptRecoveryService
         }
 
         var saved = await _transactions.UpdateAsync(session, transaction, cancellationToken);
-        return saved.IsFailure ? saved.Error : AttemptRecoveryOutcome.MarkedInDoubt;
+        if (saved.IsFailure)
+        {
+            return saved.Error;
+        }
+
+        // Same rule as finalization: a NoChange outcome (transaction was already IN_DOUBT) reported nothing new,
+        // so no second status event is emitted for it.
+        if (inDoubt.Value.Kind != TransitionKind.NoChange)
+        {
+            await _outbox.EnqueueAsync(
+                session, TransactionStatusEvents.Build(transaction, previous, inDoubt.Value, ChangeSource.SystemRecovery, _ids, _clock), cancellationToken);
+        }
+
+        return AttemptRecoveryOutcome.MarkedInDoubt;
     }
 }
