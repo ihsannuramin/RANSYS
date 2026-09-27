@@ -85,6 +85,7 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 | 12g Milestone 12 documentation | Done |
 | 13 Architecture review remediation, round 1 (`review/RANSYS_Architecture_Review_f1fbefe.md`, R1-R6) | Implemented — see below |
 | 14 Architecture re-review remediation (`review/RANSYS_Architecture_ReReview_1fc9d10.md`, RR1-RR3) | Implemented — see below |
+| 15 Architecture review remediation, round 3 (`review/RANSYS_Architecture_Review_b9616fb.md`, T1-T4) | Implemented — see below |
 
 ## Phase 1 Definition of Done (main.md §28)
 
@@ -135,7 +136,7 @@ Remaining TODOs: Response Code Catalog v1 (only approved codes are used; frozen 
 
 ## Architecture review remediation — Milestones 13-14
 
-An external architecture review (`review/RANSYS_Architecture_Review_f1fbefe.md`, HEAD `f1fbefe`) found three P1 correctness issues and three P2 issues in the Milestone 12 work above. Round 1 fixed all six:
+An external architecture review (`review/RANSYS_Architecture_Review_f1fbefe.md`, HEAD `f1fbefe`) found three P1 correctness issues and three P2 issues in the Milestone 12 work above. Round 1 attempted to fix all six; two of those fixes (R1/R2) were themselves found buggy by the next round (below) — treat "fixed" in this table as "implementer-attempted, superseded where a later round says so," not a closed/signed-off status:
 
 | ID | Finding | Fix | Commit |
 |---|---|---|---|
@@ -152,11 +153,22 @@ An external **re-review** of that round (`review/RANSYS_Architecture_ReReview_1f
 |---|---|---|---|
 | RR1 | `ProviderCallbackSink` locked its own target (the **child**, for refund/reversal/void) before calling finalization, which locks parent-then-child — opposite lock order from the sync path on the same rows, a real deadlock risk | `TransactionFinalizationService.ApplyAsync` is now the **only** lock-order implementation (peek → lock parent if child → lock target). `ProviderResultCommand` gained `ExpectedProvider`/`Evidence`; the sink no longer locks or correlates anything itself, it just calls `ApplyAsync` | `a2ce9f6` |
 | RR2 | A callback arriving after an attempt's outcome was already recorded (sync TIMEOUT, a PENDING callback, or recovery's synthetic outcome) applied its result to the transaction but silently dropped its provider reference/STAN/RRN/response data, since `transaction_attempts` is correctly immutable once recorded | A new always-overwritable projection, `Transaction.LatestProviderResult` (migration `0010`, ADR-027), captures it on `core.transactions` itself. GET, child provider requests (`OriginalProviderReferences.From`) and replay prefer it over the attempt-outcome fallback when present; `transaction_attempts`/ADR-005 immutability is untouched | `a2ce9f6` |
-| RR3 | This documentation still said "all six fixed", didn't state the callback's lock order, ADR-026 overclaimed, and a couple of stale/ambiguous references | This documentation pass | `1fc9d10` (partial) + this commit |
+| RR3 | This documentation still said "all six fixed", didn't state the callback's lock order, ADR-026 overclaimed, and a couple of stale/ambiguous references | This documentation pass | `1fc9d10` (partial) + `b9616fb` |
 
 ADR-027 (persisted "latest provider result" projection for late/final async reports) is new; ADR-026 was amended with one sentence clarifying it only covers the *first-ever-recorded* outcome case.
 
-Final verification for round 2: `dotnet build Ransys.sln` — 0 warnings, 0 errors; `dotnet test Ransys.sln` against real PostgreSQL (`RANSYS_TEST_PG`) — **1,449 passed, 0 failed, 0 skipped** across all 8 test projects (`.NET 10.0.401`, local PostgreSQL 18), at commit `a2ce9f6`; the new lock-order concurrency test was additionally run 8× in a loop with no deadlock or flaky failure. Commits through `1fc9d10` are on `origin/main`; `a2ce9f6` (this round's fix) is local only, not yet pushed, pending the reviewer's own re-verification — this documentation reflects implementer completion, not a reviewer sign-off.
+A **third review** (`review/RANSYS_Architecture_Review_b9616fb.md`, HEAD `b9616fb`) confirmed RR1's lock-order fix but found the RR2 evidence projection itself was applying an unconditional "last write wins" rule, plus one related read-path gap and one test-quality gap:
+
+| ID | Finding | Fix | Commit |
+|---|---|---|---|
+| T1 | `LatestProviderResult` was overwritten by **any** non-`NoChange` result, including a `ConflictRecorded` report that contradicts the already-accepted status (e.g. a FAILED callback arriving after an accepted SUCCESS) | The projection now updates only for `TransitionKind.Applied` (a genuinely accepted transition); `ConflictRecorded` never touches it — the accepted evidence stays intact, the conflict is still visible via the reconciliation-exception reason code | `d88c645` |
+| T2 | (A) `NoChange` (a report consistent with the already-accepted resolution, e.g. a later callback confirming an already-SUCCESS transaction with fuller evidence) returned before ever reaching the evidence write, silently dropping it. (B) The sync completion path never supplied `Evidence` at all, so a stale PENDING callback's evidence could outlive the sync path's own final, more-complete result | `NoChange` now updates the projection too (no ledger/status/outbox side effects — those didn't change). The sync path (`RecordInSessionAsync`, `MarkInDoubtAsync`) now also passes `Evidence`, so both sources feed the same precedence rule | `d88c645` |
+| T3 | `TransactionProcessingService.Build` derived STAN/RRN only from the old attempt outcome and `transaction.References`, never from `LatestProviderResult` — a later callback's RRN showed up on GET but not on a repeated POST (replay) | `Build` now selects one "accepted result" (`transaction.LatestProviderResult?.Evidence ?? attemptOutcome`) and reads both `Data` and references from it, so GET/replay/child requests are all consistent | `d88c645` |
+| T4 | The lock-order concurrency test only checked for unhandled exceptions and final state; `ProviderCallbackSink` catches `DbException` (including a real deadlock) internally and returns a normal `Accepted=false` ack, so a swallowed deadlock could pass silently | The test now asserts both sides' actual results (`ProviderCallbackAck.Accepted`, `Result<FinalizationResult>.IsSuccess`) per case, with a bounded timeout, plus a REVERSAL variant alongside REFUND/VOID | `d88c645` |
+
+ADR-027 was revised to state this precedence rule explicitly (Applied/NoChange update the projection, ConflictRecorded never does) instead of describing an unconditional overwrite.
+
+Final verification for round 3: `dotnet build Ransys.sln` — 0 warnings, 0 errors; `dotnet test Ransys.sln` against real PostgreSQL (`RANSYS_TEST_PG`) — **1,454 passed, 0 failed, 0 skipped** across all 8 test projects (`.NET 10.0.401`, local PostgreSQL 18), at commit `d88c645`. The four new tests were confirmed to actually fail against the pre-fix code (verified via a temporary stash of just the source fix) and the rewritten concurrency test (REFUND/VOID/REVERSAL) was re-run 8× with no flakes. As of this commit, `main` is one commit (`d88c645`) ahead of `origin/main` (`b9616fb`) — not yet pushed, pending the reviewer's own re-verification; this documentation reflects implementer completion, not a reviewer sign-off, and this push status is only accurate as of this commit (check `git log`/`git status` for the current state, since it will go stale as work continues).
 
 ## Architecture decisions
 
