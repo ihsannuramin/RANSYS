@@ -86,6 +86,7 @@ Dependency direction: `Domain ← Application ← Infrastructure / API`, enforce
 | 13 Architecture review remediation, round 1 (`review/RANSYS_Architecture_Review_f1fbefe.md`, R1-R6) | Implemented — see below |
 | 14 Architecture re-review remediation (`review/RANSYS_Architecture_ReReview_1fc9d10.md`, RR1-RR3) | Implemented — see below |
 | 15 Architecture review remediation, round 3 (`review/RANSYS_Architecture_Review_b9616fb.md`, T1-T4) | Implemented — see below |
+| 16 Architecture review remediation, round 4 (`review/RANSYS_Review_Progress_7dbaf4b.md`, U1-U2) | Implemented — see below |
 
 ## Phase 1 Definition of Done (main.md §28)
 
@@ -168,7 +169,20 @@ A **third review** (`review/RANSYS_Architecture_Review_b9616fb.md`, HEAD `b9616f
 
 ADR-027 was revised to state this precedence rule explicitly (Applied/NoChange update the projection, ConflictRecorded never does) instead of describing an unconditional overwrite.
 
-Final verification for round 3: `dotnet build Ransys.sln` — 0 warnings, 0 errors; `dotnet test Ransys.sln` against real PostgreSQL (`RANSYS_TEST_PG`) — **1,454 passed, 0 failed, 0 skipped** across all 8 test projects (`.NET 10.0.401`, local PostgreSQL 18), at commit `d88c645`. The four new tests were confirmed to actually fail against the pre-fix code (verified via a temporary stash of just the source fix) and the rewritten concurrency test (REFUND/VOID/REVERSAL) was re-run 8× with no flakes. As of this commit, `main` is one commit (`d88c645`) ahead of `origin/main` (`b9616fb`) — not yet pushed, pending the reviewer's own re-verification; this documentation reflects implementer completion, not a reviewer sign-off, and this push status is only accurate as of this commit (check `git log`/`git status` for the current state, since it will go stale as work continues).
+Final verification for round 3: `dotnet build Ransys.sln` — 0 warnings, 0 errors; `dotnet test Ransys.sln` against real PostgreSQL (`RANSYS_TEST_PG`) — **1,454 passed, 0 failed, 0 skipped** across all 8 test projects (`.NET 10.0.401`, local PostgreSQL 18), at commit `d88c645`. The four new tests were confirmed to actually fail against the pre-fix code (verified via a temporary stash of just the source fix) and the rewritten concurrency test (REFUND/VOID/REVERSAL) was re-run 8× with no flakes.
+
+A **fourth review** (`review/RANSYS_Review_Progress_7dbaf4b.md`, HEAD `7dbaf4b`) confirmed T1/T3/T4 but found the T1/T2 fix still applied the evidence write as a **blind replace** with no merge/enrichment/conflict policy, plus a related read-path gap:
+
+| ID | Finding | Fix | Commit |
+|---|---|---|---|
+| U1 | A less-complete or empty subsequent report could erase fuller accepted evidence, and a genuinely different provider reference could silently replace an already-accepted one with no trace | New `Transaction.MergeLatestProviderResult` (returns `Recorded`/`Enriched`/`IgnoredNoIdentity`/`ConflictingIdentity`): same identity (or none yet) fills in blanks and prefers non-empty `Data` over empty; a different identity is never silently swapped in. Used on the `NoChange` path (a duplicate report of an *already*-accepted resolution). An `Applied` transition (a genuine state supersession, e.g. a stale PENDING callback's temp evidence being superseded by the sync path's real final result) keeps the existing unconditional replace — confirmed by an existing regression test that would otherwise break, and consistent with ADR-027's original "Applied always updates" rule | `e2c5cf9` |
+| U2 | `Build`/replay picked `accepted?.Data ?? olderData`: when an accepted projection existed but its own `Data` was legitimately empty, this couldn't be told apart from "no projection at all" and wrongly fell back to stale older attempt data | `Build` and the GET query (`PostgresTransactionQuery`) now check whether an accepted projection *exists* before deciding to fall back — an existing projection's own value (even if null/empty) is trusted as-is; only a genuinely missing projection falls back to legacy attempt data | `e2c5cf9` |
+
+The review's PRD-scope progress estimate (≈40% overall, ≈85% core+API, not a production-readiness number) is the reviewer's own judgment call about overall product maturity — informational, not a code defect, nothing implemented from it.
+
+Final verification for round 4: `dotnet build Ransys.sln` — 0 warnings, 0 errors; `dotnet test Ransys.sln` against real PostgreSQL — **1,464 passed, 0 failed, 0 skipped** across all 8 test projects, at commit `e2c5cf9`. All 6 new tests (4 integration + domain-level unit tests directly on `MergeLatestProviderResult`) were confirmed to fail against the pre-fix code with exactly the wrong values the review described, and pass after; every T1–T4/RR-era test still passes unmodified.
+
+As of this commit, `main` is ahead of `origin/main` (`b9616fb`) by several commits — not yet pushed, pending the reviewer's own re-verification; this documentation reflects implementer completion, not a reviewer sign-off, and this push status is only accurate as of this commit (check `git log`/`git status` for the current state, since it will go stale as work continues).
 
 ## Architecture decisions
 
